@@ -445,5 +445,7 @@
 - 界面與文字分離：三個 `.ui` 檔在運行時由 QUiLoader 載入，檔內不含任何文字；顯示文字一律按鍵取自
   `locales/<語言>.json`。繁體中文／简体中文／English 各一個語言檔（鍵集合一致），頂欄即時切換、不需重建窗口，
   缺譯時返回鍵名本身。
-- `requirements.txt` 加 `PySide6>=6.6`；新增 `brokery/acceptance/run_gui.py`（28 項），以存根閘道 + Qt 離屏
-  （`QT_QPA_PLATFORM=offscreen`）驗收，不需券商連線亦不需顯示器。
+- 啟動即崩潰（Windows 0xC0000005、窗口不顯示）：頂層窗口無父，`run.py` 若不持有 `DesktopGui` 引用即被解構，
+  連同以其為父的背景 `QThread` 一併被拆，事件循環 abort（faulthandler 顯示無 Python 幀）。啟動腳本改為持有引用。
+- `requirements.txt` 加 `PySide6>=6.6`；新增 `brokery/acceptance/run_gui.py`（29 項），以存根閘道 + Qt 離屏
+  （`QT_QPA_PLATFORM=offscreen`）驗收，不需券商連線亦不需顯示器；其中一項直接啟動 `brokery_gui/run.py` 核對窗口會存活。

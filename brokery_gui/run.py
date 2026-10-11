@@ -22,7 +22,8 @@ def main() -> int:
         print(f"無法啟動：{exc}", file=sys.stderr)
         return 1
     qt = QtWidgets.QApplication(sys.argv)
-    DesktopGui(client).show()
+    gui = DesktopGui(client)  # 必須持有引用：頂層窗口無父，引用一沒即被解構（窗口不會顯示，背景執行緒亦會在運行中被拆）
+    gui.show()
     return qt.exec()
 
 

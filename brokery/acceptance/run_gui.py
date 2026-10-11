@@ -8,7 +8,8 @@
   千分位兩位小數、按來源統計條數；
 * 券商選項只由 /capabilities 的能力聲明填充且默認 futu（不提供該品種者標註原因且不可選）、市場選項只由
   返回的 market 填充、轉類型即轉到對應接口並重設為全部市場；
-* 閘道不可達與金鑰不正確均明確報錯（狀態列為取數失敗、原因原樣顯示）；未設 API_KEY 即拒絕建立客戶端。
+* 閘道不可達與金鑰不正確均明確報錯（狀態列為取數失敗、原因原樣顯示）；未設 API_KEY 即拒絕建立客戶端；
+* `brokery_gui/run.py` 啟動後窗口會一直存活（頂層窗口無父，啟動腳本若不持有引用即被解構、事件循環 abort）。
 
 以腳本方式直接執行：
     python brokery/acceptance/run_gui.py
@@ -16,6 +17,7 @@
 import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -227,6 +229,17 @@ def main() -> dict:
           wrong.window.statusLabel.text() == "取數失敗" and "gateway_http_403" in wrong.accounts.messageLabel.text(),
           wrong.accounts.messageLabel.text()[:60])
     check("資金欄格式化不誤傷文字", cell_text("N/A", "cash") == "N/A", cell_text("N/A", "cash"))
+
+    # 啟動腳本必須自己持有窗口引用：頂層窗口無父，引用一沒即被解構，事件循環隨即 abort（0xC0000005）。
+    root = Path(__file__).resolve().parents[2]
+    proc = subprocess.Popen([sys.executable, str(root / "brokery_gui" / "run.py")], cwd=str(root),
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    time.sleep(8)
+    alive = proc.poll() is None
+    if alive:
+        proc.terminate()
+    out = proc.communicate(timeout=20)[0] or ""
+    check("啟動腳本會保住窗口（不持有引用即窗口被解構、事件循環 abort）", alive, out.strip()[:120])
 
     for label, passed, detail in checks:
         print(f"{'PASS' if passed else 'FAIL'} {label}（{detail}）")
