@@ -1,4 +1,4 @@
-"""Webull 適配器：以 get_batch_history_bar 取 K 線，以輪詢同一接口串流最新分鐘 bar。
+"""Webull 適配器：以 get_batch_history_bar 取 K 線，以輪詢同一接口串流最新分鐘 bar，並提供標的清單。
 
 Webull 的 count 即 bar 數，與富途語義相同，不需要像 IB 那樣由 bar 數反推時間跨度。返回只有 OHLCV，
 不含成交額，故 turnover 一律為 NaN（與 IB 相同）。
@@ -6,12 +6,15 @@ Webull 的 count 即 bar 數，與富途語義相同，不需要像 IB 那樣由
 復權不可選擇：接口沒有復權參數，價格只按週期固定（日線及以上為前復權、分鐘線為不復權）。因此本適配器
 按週期聲明實際會返回的那一種，要求另一種時明確報錯，而不是靜靜返回另一種價格。
 
-只做 K 線：本專案的標的清單以富途為準，故不聲明清單能力（capabilities 為空），由 core 依 capabilities
-跳過。指數與期貨亦未實作（Webull 需另用期貨接口與合約映射），此類代碼會明確報錯。
+標的清單：股票由 instruments/stocks/profiles/list 分頁取全（實測 HK 3170／US 11680），期貨由
+instruments/futures/contracts/list 逐個產品展開到期月。指數不聲明：Webull 的 category 詞表沒有
+指數（實測只有 US_STOCK/HK_STOCK/CN_STOCK/US_ETF/HK_ETF/US_OPTION/US_FUTURES/HK_FUTURES/US_CRYPTO/
+US_EVENT），由 core 依 capabilities 跳過。
 """
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from datetime import datetime, timezone
 
 from webull.core.client import ApiClient
@@ -19,12 +22,14 @@ from webull.core.exception.exceptions import ClientException, ServerException
 from webull.data.data_client import DataClient
 from webull.trade.trade_client import TradeClient
 
-from ..codes import CodeError, parse_code, to_display_symbol
+from ..codes import FUTURE, STOCK, CodeError, build_code, parse_code, to_display_symbol
 from ..config import get_settings
 from .base import (
     ACC_CASH,
     ACC_MARGIN,
     ANCHOR_START,
+    CAP_FUTURE,
+    CAP_STOCK,
     BarMerger,
     SymbolBroker,
     account_row,
@@ -51,6 +56,29 @@ WEBULL_TIMESPAN = {
 # 統一市場 → Webull 的 category（股票）。其餘市場無對應 category，明確報錯。
 WEBULL_CATEGORY = {"HK": "HK_STOCK", "US": "US_STOCK"}
 
+# 股票清單只取的 sub_category。Webull 把認股證、牛熊證等與普通股混在同一 category，故按
+# sub_category 過濾；各市場可用的值由接口錯誤訊息取得（實測 HK: [COMMON_STOCK, ETF]、US:
+# [COMMON_STOCK, ETF, PREFERRED_STOCK, WARRANT, UNITS, RIGHT]）。此處只取普通股、ETF 與優先股，
+# 與富途 list_stocks 的 STOCK/ETF 範圍一致（認股證等在富途屬另外的類型，不在股票清單內）。
+WEBULL_STOCK_SUBCATEGORY = {
+    "HK": ("COMMON_STOCK", "ETF"),
+    "US": ("COMMON_STOCK", "ETF", "PREFERRED_STOCK"),
+}
+
+# 統一市場 → Webull 的期貨 category。期貨沒有批量清單接口，只能逐個產品 root 展開（見 list_futures）。
+WEBULL_FUTURE_CATEGORY = {"HK": "HK_FUTURES", "US": "US_FUTURES"}
+
+# Webull 的期貨交易所代號 → 統一詞表（見 codes.EXCHANGE_MARKET）。Webull 以 OMS 代號登記（實測
+# XCME 即 CME Globex、XCBT 即 CBOT、XCEC 即 COMEX、HFE 即港交所期交所），與富途、Tiger 對同一
+# 交易所的寫法不同，故先歸一才寫入 exchange，使同一合約在各券商可對照。未登記的交易所原樣返回。
+WEBULL_FUTURE_EXCHANGE = {
+    "HFE": "HKFE",
+    "XCME": "CME",
+    "XCBT": "CBOT",
+    "XNYM": "NYMEX",
+    "XCEC": "COMEX",
+}
+
 # 各週期實際返回的複權模式（日線及以上為前復權、分鐘線為不復權，見 get_batch_history_bar 文件）。
 WEBULL_AUTYPE = {
     "1m": "none", "5m": "none", "15m": "none", "30m": "none", "60m": "none",
@@ -62,6 +90,12 @@ POLL_SECONDS = 2.0  # 串流的輪詢間隔：港股行情限制為 60 次/60 �
 REQUEST_TIMEOUT = (10, 30)  # 連線/讀取超時（秒），防止請求無限掛起
 TOKEN_CHECK_SECONDS = 30  # token 未獲批准時的等待上限：SDK 預設 300 秒，過長會令呼叫長時間阻塞
 TOKEN_CHECK_INTERVAL = 5
+
+# 標的清單為多次請求（分頁或逐個產品），Webull 的元數據接口限速約 1 次/秒（實測不等待時約 75 頁
+# 後開始 429），故每次請求之間固定等待，並對 429 重試；重試仍失敗才向上報錯。
+LIST_REQUEST_INTERVAL = 1.2
+LIST_RETRY = 2
+LIST_RETRY_WAIT = 5.0
 
 
 def _payload(response, what: str):
@@ -104,9 +138,12 @@ def _balance_funds(balance: dict, block: dict | None) -> dict:
 
 
 class WebullBroker(SymbolBroker):
-    """Webull OpenAPI 的 K 線來源（股票）。"""
+    """Webull OpenAPI 的標的來源（股票、期貨）與 K 線。"""
 
     source = "webull"
+    # 股票為原生全量（按 category + sub_category 分頁）；期貨只有近月合約且需逐個產品展開，仍屬
+    # 可取的清單。指數不聲明：Webull 沒有指數 category（見模組 docstring），不憑種子表湊出。
+    capabilities = frozenset({CAP_STOCK, CAP_FUTURE})
     # 接口的 time 為 bar 起點（日線為該交易日零時，並帶時區偏移），故以起點為錨點；週/月線經 align_ts
     # 歸到所屬週期起點，與富途一致。
     kline_anchor = ANCHOR_START
@@ -146,8 +183,8 @@ class WebullBroker(SymbolBroker):
             self._api = api
         return self._api
 
-    def _market_data(self):
-        """構造（並複用）行情客戶端。未獲批准即在此報錯。"""
+    def _data_client(self) -> DataClient:
+        """構造（並複用）數據客戶端：行情與標的元數據共用同一份鑑權與 token。未獲批准即在此報錯。"""
         if self._data is None:
             try:
                 self._data = DataClient(self._api_client())
@@ -157,10 +194,81 @@ class WebullBroker(SymbolBroker):
                     f"token_unapproved: {exc}；請在 Webull App 中批准本次 API 授權請求後重試"
                     f"（token 已存放於 {settings.webull_token_dir}，批准後可直接沿用）"
                 ) from exc
-        return self._data.market_data
+        return self._data
+
+    def _market_data(self):
+        return self._data_client().market_data
+
+    def _instrument_api(self):
+        return self._data_client().instrument
 
     def _trade_client(self) -> TradeClient:
         return TradeClient(self._api_client())
+
+    # ---------- 標的清單 ----------
+
+    def list_stocks(self, markets: Iterable[str]) -> list[dict]:
+        """股票清單：按 category + sub_category 分頁取全部在市代碼（實測 HK 3170／US 11680）。
+
+        currency 與 exchange 一律為接口原生值：Webull 以自有的場所代號登記（實測港股為 HKG／XGEM，
+        美股為 NYSE／NAS／NSQ／NMS／PSE／BAT 等），各券商對同一場所的寫法本來不同，不憑空歸一；
+        原生 instrument_id 保留在 raw_code 以便回溯核對。
+        """
+        rows: list[dict] = []
+        for market in markets:
+            market = str(market).upper()
+            category = self._category(market)
+            for sub_category in WEBULL_STOCK_SUBCATEGORY[market]:
+                for item in self._paged_instruments(
+                    category=category, sub_category=sub_category, status="OC"
+                ):
+                    symbol = _native_symbol(market, str(item["symbol"]))
+                    rows.append(self.make_row(
+                        code=build_code(market, symbol),
+                        name=str(item.get("name", "")),
+                        market=market,
+                        symbol=symbol,
+                        symbol_type=STOCK,
+                        currency=str(item.get("currency", "")),
+                        exchange=str(item.get("exchange_code", "")),
+                        expiry="",
+                        raw_code=f"{category}|{sub_category}|{item.get("instrument_id", "")}",
+                    ))
+        return rows
+
+    def list_futures(self, seeds: Iterable) -> list[dict]:
+        """期貨清單：逐個種子 root 展開其在市合約（實測 HSI 13 個月、ES 2 個月）。
+
+        Webull 沒有批量期貨清單接口（contracts/list 不带 code 或 symbol 即 417），而 products/list
+        對 HK 返回 89 個、對 US 返回 2552 個產品，逐個展開需上千次請求，故與 IB 一樣以種子 root
+        為準（見 universe.FUTURE_ROOTS）。種子中 Webull 未提供者返回空列表，不憑空補出（實測 VIX
+        即如此）。Webull 只掛近月合約（實測美股每個 root 只有最近兩個月），亦沒有主連概念，故不
+        生成 main 行。currency 原樣返回（實測農產品期貨為 Webull 自有的 USX，非 ISO 代碼）。
+        """
+        rows: list[dict] = []
+        for seed in seeds:
+            market = str(seed.market).upper()
+            category = WEBULL_FUTURE_CATEGORY.get(market)
+            if category is None:
+                continue
+            time.sleep(LIST_REQUEST_INTERVAL)
+            for item in self._futures_instruments(category, seed.root):
+                if item.get("status") not in (None, "OC"):
+                    continue
+                native_exchange = str(item.get("exchange_code", ""))
+                rows.append(self.make_row(
+                    code=build_code(market, seed.root),
+                    name=str(item.get("name", "")),
+                    market=market,
+                    symbol=to_display_symbol(market, seed.root),
+                    symbol_type=FUTURE,
+                    currency=str(item.get("currency", "")),
+                    exchange=WEBULL_FUTURE_EXCHANGE.get(native_exchange.upper(), native_exchange),
+                    expiry=str(item.get("contract_month", "")),
+                    raw_code=f"{category}|{item.get("symbol", "")}|{native_exchange}|"
+                             f"{item.get("instrument_id", "")}",
+                ))
+        return rows
 
     # ---------- K 線 ----------
 
@@ -346,9 +454,42 @@ class WebullBroker(SymbolBroker):
     def _category(self, market: str) -> str:
         if market not in WEBULL_CATEGORY:
             raise CodeError(
-                f"market_unsupported: webull 只提供 {'/'.join(WEBULL_CATEGORY)} 市場的股票 K 線"
+                f"market_unsupported: webull 只提供 {'/'.join(WEBULL_CATEGORY)} 市場的股票"
+                "（K 線與股票清單）"
             )
         return WEBULL_CATEGORY[market]
+
+    def _paged_instruments(self, **params):
+        """按 pagination_key 逐頁取 list_instruments 的結果（每頁 1000 條）。
+
+        429 屬限速而非參數錯誤，故等待後重試；無資料或無 pagination_key 即結束。
+        """
+        key = None
+        while True:
+            for attempt in range(LIST_RETRY + 1):
+                try:
+                    payload = _payload(
+                        self._instrument_api().list_instruments(pagination_key=key, **params),
+                        "list_instruments",
+                    )
+                    break
+                except RuntimeError as exc:
+                    if "HTTP 429" not in str(exc) or attempt == LIST_RETRY:
+                        raise
+                    time.sleep(LIST_RETRY_WAIT)
+            data = payload.get("data", [])
+            yield from data
+            key = payload.get("pagination_key")
+            if not data or not key:
+                return
+            time.sleep(LIST_REQUEST_INTERVAL)
+
+    def _futures_instruments(self, category: str, root: str) -> list[dict]:
+        """取某期貨產品的全部在市合約（Webull 需逐個產品查詢，無批量接口）。"""
+        return _payload(
+            self._instrument_api().get_futures_instrument(code=root, category=category),
+            f"get_futures_instrument {root}",
+        ) or []
 
 
 def _native_symbol(market: str, symbol: str) -> str:

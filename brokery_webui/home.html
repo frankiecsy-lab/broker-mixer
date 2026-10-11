@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<!-- brokery_webui 主頁：上方為菜單（戶口清單、標的列表）。所有資料均由本應用的 /api/* 轉發閘道取得，
+     頁面不含任何金鑰，也不直接連接券商。 -->
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>brokery Web UI</title>
+<style>
+  :root { --bg:#12161c; --panel:#1a2028; --line:#2b3441; --fg:#dfe6ef; --dim:#8a97a8;
+          --up:#e0524a; --down:#2ea36f; --accent:#4b9ece; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 "Segoe UI","Microsoft JhengHei",sans-serif; }
+  header { display:flex; gap:12px; align-items:center; padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  header .sub { color:var(--dim); font-size:12px; }
+  #status { margin-left:auto; color:var(--dim); font-size:12px; }
+  nav { display:flex; gap:4px; padding:8px 16px; background:var(--panel); border-bottom:1px solid var(--line); }
+  nav button { background:transparent; border:1px solid transparent; color:var(--dim); font:inherit;
+               padding:5px 10px; border-radius:4px; cursor:pointer; }
+  nav button.active { color:var(--fg); border-color:var(--line); background:#0f1318; }
+  main { padding:16px; }
+  section { display:none; } section.active { display:block; }
+  .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+  button.act { background:var(--accent); border:1px solid var(--accent); color:#08131c; font:inherit;
+               font-weight:600; border-radius:4px; padding:5px 10px; cursor:pointer; }
+  .chip { display:inline-flex; gap:6px; align-items:center; padding:3px 9px; background:var(--panel);
+          border:1px solid var(--line); border-radius:12px; font-size:12px; }
+  .bar label { display:inline-flex; gap:6px; align-items:center; color:var(--dim); font-size:12px; }
+  select { background:#0f1318; color:var(--fg); border:1px solid var(--line); border-radius:4px;
+           font:inherit; padding:5px 8px; }
+  .chip b { font-weight:600; } .chip i { color:var(--dim); font-style:normal; }
+  .msg { color:var(--dim); margin:8px 0; }
+  .msg.err { color:var(--up); }
+  .msg.warn { color:#d8a24a; }
+  .msg.busy { color:var(--accent); }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:12px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { padding:4px 8px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--dim); font-weight:500; position:sticky; top:0; background:var(--panel); }
+  .scroll { max-height:70vh; overflow:auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>brokery</h1>
+  <span class="sub">量化交易</span>
+  <span id="status">未取數</span>
+</header>
+
+<!-- 新增頁面時在此加一個 button[data-page]，並在 main 內加對應的 section。 -->
+<nav id="menu">
+  <button data-page="accounts" class="active">戶口清單</button>
+  <button data-page="symbols">標的列表</button>
+</nav>
+
+<main>
+  <section id="page-accounts" class="active">
+    <div class="bar">
+      <button class="act" id="a-refresh">重新整理</button>
+      <span id="a-sources"></span>
+    </div>
+    <div class="msg" id="a-msg"></div>
+    <div class="panel"><div class="scroll" id="a-table"></div></div>
+  </section>
+
+  <!-- 篩選在上方（類型／市場／券商），下方為取得的清單。選項均由接口返回，頁面不硬寫券商或市場名單。 -->
+  <section id="page-symbols">
+    <div class="bar">
+      <label>類型
+        <select id="s-kind">
+          <option value="stock" selected>股票</option>
+          <option value="future">期貨</option>
+          <option value="index">指數</option>
+        </select>
+      </label>
+      <label>市場<select id="s-market"><option value="">全部</option></select></label>
+      <label>券商<select id="s-broker"></select></label>
+      <button class="act" id="s-refresh">取得</button>
+      <span id="s-sources"></span>
+    </div>
+    <div class="msg" id="s-msg"></div>
+    <div class="panel"><div class="scroll" id="s-table"></div></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+// 資金欄位按數值顯示（千分位與兩位小數）；其餘欄位一律按原樣文字顯示，不重新解讀。
+const MONEY = new Set(['net_liquidation', 'cash', 'market_value', 'available_funds', 'buying_power',
+                       'init_margin', 'maint_margin', 'equity_with_loan', 'unrealized_pnl', 'realized_pnl']);
+
+function esc(text) {
+  return String(text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function cell(value, column) {
+  if (value === null || value === undefined) return '—';   // 缺失值一律顯示破折號，不以任何數字湊出
+  if (MONEY.has(column)) return Number(value).toLocaleString('en-US',
+      { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return esc(value);
+}
+
+function setMsg(el, text, cls) {
+  el.textContent = text;
+  el.className = 'msg' + (cls ? ' ' + cls : '');
+}
+
+function setStatus(text, ok) {
+  const el = $('status');
+  el.textContent = text;
+  el.style.color = ok === false ? 'var(--up)' : (ok ? 'var(--down)' : 'var(--dim)');
+}
+
+function renderTable(el, data) {
+  if (!data.columns || !data.columns.length) { el.innerHTML = ''; return; }
+  const head = data.columns.map((c) => `<th>${esc(c)}</th>`).join('');
+  const body = data.rows.map((row) => `<tr>${row.map((v, i) => `<td>${cell(v, data.columns[i])}</td>`).join('')}</tr>`).join('');
+  el.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+// 按來源統計條數：只由返回的行統計，沒返回的來源不會出現，避免憑空列出一間「0 條」。
+function renderCounts(el, data, unit) {
+  const index = (data.columns || []).indexOf('source');
+  if (index < 0) { el.innerHTML = ''; return; }
+  const counts = new Map();
+  data.rows.forEach((row) => counts.set(row[index], (counts.get(row[index]) || 0) + 1));
+  el.innerHTML = [...counts.entries()]
+    .map(([src, n]) => `<span class="chip"><b>${esc(src)}</b><i>${n} ${unit}</i></span>`).join('');
+}
+
+// 取數並顯示：兩個頁面同一流程，差別只在接口與單位。失敗原因一律原樣顯示，不自行改寫或掩飾。
+async function loadInto(msgEl, tableEl, countEl, unit, url, busy) {
+  setMsg(msgEl, busy || '讀取中…', 'busy');
+  let body;
+  try {
+    const resp = await fetch(url);
+    body = await resp.json();
+  } catch (err) {
+    setStatus('閘道不可達', false);
+    setMsg(msgEl, `請求失敗：${err}`, 'err');
+    return;
+  }
+  const data = body.data || { columns: [], rows: [] };
+  renderTable(tableEl, data);
+  renderCounts(countEl, data, unit);
+  // 個別券商失敗時閘道仍返回已取得的資料（status=True，原因寫在 message），故以警告色提示而不當作失敗。
+  if (!body.status) { setStatus('取數失敗', false); setMsg(msgEl, body.message, 'err'); }
+  else {
+    setStatus('已連接閘道', true);
+    setMsg(msgEl, body.message, body.message.includes('注意') || body.message.includes('失敗') ? 'warn' : '');
+  }
+  return body;
+}
+
+function loadAccounts() {
+  return loadInto($('a-msg'), $('a-table'), $('a-sources'), '個戶口', '/api/accounts');
+}
+
+const KIND_LABEL = { stock: '股票', future: '期貨', index: '指數' };
+let brokerCaps = {};              // 券商 → 其聲明的品種；由 /api/capabilities 取得，頁面不硬寫券商名單
+const seenMarkets = new Set();    // 只列實際返回過的市場，不憑空給出選項
+
+async function loadBrokers() {
+  if (Object.keys(brokerCaps).length) return;
+  try {
+    const body = await (await fetch('/api/capabilities')).json();
+    if (!body.status) { setMsg($('s-msg'), body.message, 'err'); return; }
+    brokerCaps = body.data.adapters || {};
+  } catch (err) {
+    setMsg($('s-msg'), `讀取券商能力失敗：${err}`, 'err');
+    return;
+  }
+  renderBrokers();
+}
+
+// 券商選項按各家的能力聲明標註：不提供所選品種的選項設為不可選，原因在選項上寫明，
+// 而不是讓用戶按了才知道會報 type_unsupported。
+function renderBrokers() {
+  const kind = $('s-kind').value;
+  const current = $('s-broker').value;
+  $('s-broker').innerHTML = Object.entries(brokerCaps).map(([name, caps]) => {
+    const supported = (caps.capabilities || []).includes(kind);
+    const label = supported ? name : `${name}（不提供${KIND_LABEL[kind]}）`;
+    return `<option value="${esc(name)}"${supported ? '' : ' disabled'}${name === (current || 'futu') ? ' selected' : ''}>${esc(label)}</option>`;
+  }).join('');
+}
+
+function renderMarkets() {
+  const current = $('s-market').value;
+  $('s-market').innerHTML = '<option value="">全部</option>'
+    + [...seenMarkets].sort().map((m) => `<option value="${esc(m)}"${m === current ? ' selected' : ''}>${esc(m)}</option>`)
+    .join('');
+}
+
+async function loadSymbols() {
+  const kind = $('s-kind').value;
+  const market = $('s-market').value;
+  const params = new URLSearchParams({ kind, broker: $('s-broker').value });
+  if (market) params.set('market', market);
+  const body = await loadInto($('s-msg'), $('s-table'), $('s-sources'), '條', `/api/symbols?${params}`,
+                              `向 ${params.get('broker')} 取${KIND_LABEL[kind]}清單…`);
+  if (!body) return;
+  const index = (body.data?.columns || []).indexOf('market');
+  if (index >= 0) (body.data.rows || []).forEach((row) => seenMarkets.add(row[index]));
+  renderMarkets();
+}
+
+function show(page) {
+  document.querySelectorAll('#menu button').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
+  document.querySelectorAll('main section').forEach((s) => s.classList.toggle('active', s.id === 'page-' + page));
+  if (page === 'accounts') loadAccounts();
+  if (page === 'symbols') loadBrokers().then(loadSymbols);
+}
+
+// 轉類型時清空市場選項：各品種返回的市場不同，留著上一品種的市場只會白得一個 empty_list。
+function switchKind() {
+  seenMarkets.clear();
+  $('s-market').value = '';
+  renderBrokers();
+  loadSymbols();
+}
+
+document.querySelectorAll('#menu button').forEach((b) => b.addEventListener('click', () => show(b.dataset.page)));
+$('a-refresh').addEventListener('click', loadAccounts);
+$('s-refresh').addEventListener('click', loadSymbols);
+$('s-kind').addEventListener('change', switchKind);
+$('s-market').addEventListener('change', loadSymbols);
+$('s-broker').addEventListener('change', loadSymbols);
+show('accounts');
+</script>
+</body>
+</html>

@@ -1,24 +1,34 @@
 # brokery
 
 跨券商標的與行情統一層。以富途代碼格式為唯一對外格式（`US.NVDA`、`HK.00700`、`US.ESmain`），
-把不同券商的原生代碼與能力差異藏在內部。清單與代碼轉換支援 **FUTU（富途）** 與 **IB（Interactive
-Brokers）**；K 線與 K 線串流另支援 **Tiger（老虎）** 與 **Webull**。
+把不同券商的原生代碼與能力差異藏在內部。**四家（FUTU 富途、IB、Tiger 老虎、Webull）都提供標的
+清單與 K 線**，但每個品種是否可得一律按各家能力聲明（見下表；未聲明者由 `core` 明確返回
+`no_source`，不以空表冒充）。代碼轉換只支援 **IB**。同級的 `brokery_api/` 再把以上全部能力以
+FastAPI 對外為 HTTP/WebSocket 與一個 dashboard（見 §11）；`brokery_webui/` 則是一個只負責頁面與轉發的
+量化交易 Web UI（見 §12）；`brokery_gui/` 是同一功能的 PySide6 桌面 GUI，界面以 `.ui` 分離、支援三種語言即時
+切換（見 §13）。
 
 ## 當前狀態
 
 | 功能 | 狀態 | 資料來源 |
 | --- | --- | --- |
-| 全量代碼清單 `list_all`（股票 + 期貨 + 指數） | ✅ 可用 | FUTU（港美兩市實測 38,568 條） |
-| 股票清單（含 ETF，一次取全） | ✅ 可用 | FUTU |
-| 期貨清單（主連 + 所有到期月） | ✅ 可用 | FUTU + IB |
-| 指數清單 | ✅ 可用 | FUTU + IB |
+| 全量代碼清單 `list_all`（股票 + 期貨 + 指數） | ✅ 可用 | FUTU（港美兩市實測 38,568 條）+ Tiger + Webull（合併去重） |
+| 股票清單（含 ETF） | ✅ 可用 | FUTU（一次取全）+ Tiger（實測 HK 3,763／US 14,609）+ Webull（分頁，實測 HK 3,170／US 12,306）；**IB 不提供**（無「一次列出全市場股票」的接口，未聲明即返回 `no_source`） |
+| 期貨清單（主連 + 所有到期月） | ✅ 可用 | FUTU + IB + Tiger（原生全量，實測 649 條，含種子外的 MEUR/ZM 等）+ Webull（按種子展開，實測 41 條、只掛近月；種子中無提供者如 VIX 如實留空） |
+| 指數清單 | ✅ 可用 | FUTU（按市場列全，港美 740 條）+ IB（種子解析）+ Tiger（符號表內的 4 隻美股指數）；**Webull 不提供**（無指數類別） |
+| 標的清單的統一輸出（四家同一欄位契約、未聲明品種明確拒绝） | ✅ 可用 | 四家逐家 × 逐品種實測（`run_list_symbols.py`）：欄位與順序一律為 `COLUMNS`、字串欄無 NaN、`code` 一律 `<市場>.<符號>`、未聲明者返回 `no_source`。`broker=` 只向一家取（未啟用即 `unknown_source`、該家不提供即 `type_unsupported`，不靜默改用別家）、`markets=` 過濾返回的市場（`run_list_filter.py` 10 項全過，不需連線） |
 | 代碼雙向轉換（統一代碼 ↔ IB 原生合約） | ✅ 可用 | IB |
 | 離線存放與讀回（parquet + meta） | ✅ 可用 | 本地 `brokery/data/`（由 `.env` 指定） |
 | 離線讀取代碼清單 `get_code` | ✅ 可用 | 本地 parquet，不需要 OpenD / IB |
 | K 線 `get_kline`（統一格式、以 bar 數取數） | ✅ 可用 | FUTU + IB（日/週/月線實測逐根按 `ts` 對齊，價格一致）+ Webull（日線/分鐘線實測，日線確實做了前復權，調整因子與 IB 一致：與原始成交價最大相差 0.062%）+ Tiger（日線/1 分鐘線實測，`autype="none"` 時 close 與 FUTU 逐根完全一致） |
 | 前復權跨券商對照（日內與日線） | ✅ 可用 | FUTU `qfq` + IB `ADJUSTED_LAST` + Tiger `right=BR` + Webull（日線固定前復權）：`HK.00005` 日線 60 根四家共同 60 根逐根對齊，以富途為準 Tiger 最大相差 0.02%、IB/Webull 0.44% |
 | 品種支持矩陣（股票／期貨／指數／期權）與復權適用範圍 | ✅ 已核實 | 四家實測（`run_kline_matrix.py`，31 項檢查）：不支持的品種由適配器聲明、`core` 統一返回 `type_unsupported`；復權只對股票有效（期貨／指數／期權的 `qfq` 與 `none` 逐根完全相同）；指數代碼可跨券商（`HK.800000` 富途與 IB 的 close 完全相同、`US..SPX` Tiger 與 IB 完全相同） |
-| 戶口與資金 `get_accounts`（四家統一 15 欄） | ✅ 可用 | FUTU + IB + Tiger + Webull（實測 futu 2 個（cash/margin，模擬與已停用的不列）、IB 1 個、Tiger 1 個、Webull 2 個；`currency` 全部填到：futu/IB/Webull 為 HKD、Tiger 為 USD；38 項檢查全過） |
+| 戶口與資金 `get_accounts`（四家統一 15 欄） | ✅ 可用 | FUTU + IB + Tiger + Webull（實測 futu 2 個（cash/margin，模擬與已停用的不列）、IB 1 個、Tiger 1 個、Webull 2 個；`currency` 全部填到：futu/IB/Webull 為 HKD、Tiger 為 USD；IB 的 `individual` 在按 `cash`/`margin` 篩選時點名說明而不靜默丟列；39 項檢查全過） |
+| 券商連線狀態與速度 `get_brokers`（統一 6 欄） | ✅ 可用 | FUTU + IB + Tiger + Webull 四家並行探測實測（futu 178ms／ib 542ms／tiger 1216ms／webull 954ms，總耗時 1.2s ≈ 最慢一家）；探測用一次戶口查詢，故不需要行情權限；22 項檢查全過 |
+| HTTP/WS 閘道與 dashboard `brokery_api`（自訂 API Key、K 線圖、實時訂閱、戶口（四家同屏、10 秒自動刷新）、標的（按來源分四區；離線 CODES 以單一表格顯示）、日誌窗、四家連線狀態與延遲、讀取提示） | ✅ 可用 | 四家經同一閘道實測（`/kline`、`/accounts`、`/brokers`、各清單與 `/stream` 均連通）；`run_api.py` 40 項檢查全過（不需券商連線）；`run_ui.py` 29 項客戶端檢查全過（存根閘道 + Chromium：含戶口頁自動刷新與不分來源、按來源汇总並點名無返回者、標的頁一次點擊四區同時返回並區分「N 條／無返回／不提供此清單」、請求進行時的讀取提示、標的頁不再有「統一格式輸出」面板（即時清單只按來源分區）、離線 CODES 不分區而以單一表格顯示且欄位順序即接口原樣） |
+| 量化交易 Web UI `brokery_webui`（上方菜單兩項：「戶口清單」四家戶口與資金同屏；「標的列表」上方為類型／市場／券商篩選、下方為取得的清單，默認富途） | ✅ 可用 | 資料經同一閘道取得（實測 `http://127.0.0.1:8282` 顯示 6 個戶口：futu 2／ib 1／tiger 1／webull 2，15 欄與 `ACCOUNT_COLUMNS` 逐欄一致、缺失值為破折號）；券商選項由能力聲明填充、不提供該品種者標註且不可選，市場選項只由實際返回的 `market` 填充；`run_webui.py` 30 項檢查全過（存根閘道 + Chromium，不需券商連線） |
+| 量化交易桌面 GUI `brokery_gui`（PySide6：兩個分頁同 Web UI——「戶口清單」與「標的列表」；界面以 `.ui` 檔分離且檔內不含任何文字；繁體中文／简体中文／English 即時切換，每個語言一個 `.json`） | ✅ 可用 | 與 Web UI 同一閘道、同一口徑（表格欄位由返回的 `columns` 決定、缺失值為破折號、資金欄千分位、券商選項由能力聲明填充且不提供該品種者標註並不可選、市場選項只由實際返回的 `market` 填充）；取數在背景執行緒，界面不因券商連線而凍結；`run_gui.py` 28 項檢查全過（存根閘道 + Qt 離屏，不需券商連線亦不需顯示器） |
+| 一次過啟動閘道與 Web UI `run_all.py`（其中一個先結束即停止另一個，Ctrl+C 一併停止） | ✅ 可用 | 實測 `python run_all.py`：兩個端口同時回應、Web UI 可經剛啟動的閘道取數、送 Ctrl+C 後兩個一併退出且端口釋放；`run_launch.py` 7 項檢查全過（存根命令，不需券商連線，亦不真的啟動服務） |
 | K 線串流 `stream_kline`（一條連線同時串流多個代碼） | ✅ 可用 | FUTU 實時推送 + IB `keepUpToDate` + Tiger `subscribe_kline` 原生推送 + Webull 輪詢批量 bar（憑證只開通 HK 行情，美股明確報錯 `market_data_not_subscribed`）；實測 futu/ib/tiger/webull 全部合規格（Tiger 一條連線同時串流港美 3 個代碼；Webull 以 2 個 HK 代碼共用一次輪詢）；推送本身要開市才收得到 |
 
 ## 快速開始
@@ -56,6 +66,15 @@ offline = Brokery().get_code()           # 之後離線讀回 CODES：不需 Ope
 print(offline["status"], len(offline["data"]))
 ```
 
+要經 HTTP 取數或直接睇 dashboard，起同級的閘道：
+
+```bash
+python run_all.py             # 一次過起閘道 + Web UI（端口見 .env）：其中一個先結束即停止另一個，Ctrl+C 一併停止
+python brokery_api/run.py     # 只起閘道 http://127.0.0.1:8181；金鑰讀自 .env 的 API_KEY
+python brokery_webui/run.py   # 只起量化交易 Web UI：http://127.0.0.1:8282（要先起閘道，Web UI 只轉發不連券商）
+python brokery_gui/run.py     # 只起量化交易桌面 GUI（PySide6 窗口；同樣要先起閘道，地址與金鑰讀自 .env）
+```
+
 ## 核心功能
 
 ### 1. 統一返回信封
@@ -84,29 +103,52 @@ print(offline["status"], len(offline["data"]))
 ### 3. 股票清單
 ```python
 bk.list_stocks(["HK", "US"])              # 預設港美；可傳 SH/SZ/SG/JP/MY/AU/CA
+bk.list_stocks(["HK"], broker="futu")     # 只向富途取；未啟用即 unknown_source，該家不提供即 type_unsupported
 ```
-富途 `get_stock_basicinfo` 每個（市場, 證券類型）一次調用即返回全量，無分頁、無條件選股限頻，
-港美兩市數秒完成。涵蓋類型為 `STOCK` 與 `ETF`（見 `brokers.futu_broker.STOCK_TYPES`）。
+四家中三家提供，取得方式與如實保留的原生差異：
+
+| 來源 | 取得方式 | 實測與原生差異 |
+| --- | --- | --- |
+| FUTU | `get_stock_basicinfo` 按（市場, 證券類型）一次取全，無分頁、無選股限頻 | 港美兩市數秒完成；涵蓋 `STOCK` 與 `ETF`（見 `brokers.futu_broker.STOCK_TYPES`） |
+| Tiger | `get_symbol_names` 按市場一次取全 | HK 3,763／US 14,609；接口不附帶掛牌場所（`get_stock_details` 本戶口 `permission denied`），`exchange` 一律空字串 |
+| Webull | `list_instruments` 按 `category` + `sub_category` 分頁（每頁 1000，只取 `status=OC`，故隔走認股證與 CBBC） | HK 3,170／US 12,306；`exchange` 為 Webull 自有的場所代號（HKG／XGEM／NAS／NSQ／NMS…），各券商對同一場所的寫法本來不同，不憑空歸一；原生 `instrument_id` 留在 `raw_code` |
+| IB | **不提供**：無「一次列出全市場股票」的接口（空 symbol 的 `reqContractDetails` 150s 無回應、`reqMatchingSymbols` 只為 top-N 且混入 BOND、`reqScannerData` error 162） | 能力未聲明，`core` 返回 `no_source: 已啟用的券商（ib）不提供股票清單`，UI 顯示「不提供此清單」 |
 
 ### 4. 期貨清單
 ```python
 bk.list_futures()                          # 內建種子（ES/NQ/YM/RTY/VIX/CL/GC/SI/HG/ZN/ZS/ZW/ZC/HSI/MHI）
 bk.list_futures(["ES"])                    # 指定產品
+bk.list_futures(["ES"], markets=("US",))   # 期貨接口沒有市場參數：markets 按返回行的 market 過濾
 ```
-主連以 `main` 後綴表示；個月份的到期月放 `expiry` 欄。兩個來源的差別：
+主連以 `main` 後綴表示；個月份的到期月放 `expiry` 欄。四家全部提供，但取得方式與到期月的寫法不同：
 
 | 來源 | 取得方式 | 主連 | 個月份代碼 |
 | --- | --- | --- | --- |
-| FUTU | 按市場一次列舉全部期貨（實測港美 14,078 條） | `US.10Ymain`（另有 `current`/`next`/`day`） | 富途原生格式 `US.10Y2609` |
+| FUTU | 按市場一次列舉全部期貨（實測港美 14,078 條） | `US.10Ymain`（另有 `current`/`next`/`day`） | 富途原生格式 `US.10Y2609`，`expiry` 為富途原生的最後交易日 `YYYYMMDD` |
 | IB | 依內建種子展開（ES/NQ/YM/RTY/VIX/CL/GC/SI/HG/ZN/ZS/ZW/ZC/HSI/MHI） | `US.ESmain`（IB `CONTFUT`，含 conId） | `US.ES` + `expiry=YYYYMMDD` |
+| Tiger | 原生批量：`get_future_exchanges` + `get_future_contracts`，不需種子（實測 649 條，含種子外的 MEUR／ZM／XW 等；`trade=False` 者不列） | `US.ESmain` | `US.ES` + `expiry=YYYYMM` |
+| Webull | 無批量接口：按種子 root 逐個 `get_futures_instrument(code=root)` 展開（實測 41 條／14 個 root） | 無主連概念，不憑空補 `main` 行 | `US.ES` + `expiry=YYYYMM`；只掛近月（實測美股每個 root 只有最近兩個月）；種子中無提供者（實測 VIX）返回空，不憑空補出 |
 
-預設兩個來源都會取，結果合併去重；只要其中一個，用 `Brokery(sources=("futu",))`。同一 IB 合約
+預設四家都會取，結果合併去重；只要其中一家，用 `Brokery(sources=("futu",))`。以 root 表達合約的
+三家（IB／Tiger／Webull）同一 `code` 會跨多個到期月，故期貨行的唯一鍵為 `code` + `expiry`。去重
+（鍵為 market + symbol_type + symbol + expiry）後某家可能不再出現：其提供的合約若全部已被別家
+覆蓋，即只保留一份（實測 Webull 的 ES 兩個月與 Tiger 逐欄相同，`message` 仍為 `ok`）；同一合約
 在多處掛牌（如 CME 與 QBALGO）只保留主場。
 
 ### 5. 指數清單
 ```python
-bk.list_indices()                          # FUTU 按市場列全（港美 740 條）+ IB 種子解析
+bk.list_indices()                          # FUTU 按市場列全 + IB 種子解析 + Tiger 符號表
+bk.list_indices(["SPX"])                   # 指定符號
+bk.list_indices(markets=("HK",))           # 只保留港股；全部不在指定市場即 empty_list，不以空表冒充
 ```
+三個方法一律接受 `broker=`（只向一家取，能力閘由適配器聲明、`core` 統一拒绝，不會靜默改用別家湊數）與
+`markets=`（過濾返回行的 `market`；股票清單的市場由適配器自己處理，這一層只確保返回的確實是所請求的市場）。
+| 來源 | 取得方式 | 實測 |
+| --- | --- | --- |
+| FUTU | 按市場一次列舉 `IDX` 類型 | 港美 740 條 |
+| IB | 依內建種子（HSI/HSTECH/VHSI/SPX/NDX/VIX/N225）解析 | 只返回可解析者 |
+| Tiger | 符號表中以句點前綴登記的指數（`US..SPX`、`US..DJI`、`US..IXIC`） | 4 隻美股指數；不把種子外的句點符號當指數 |
+| Webull | **不提供**：接口沒有指數類別 | 返回 `no_source: 已啟用的券商（webull）不提供指數清單` |
 
 ### 6. 代碼轉換
 ```python
@@ -283,7 +325,9 @@ bk.get_accounts(broker="ib", currency="USD")       # 只取以美元結算的金
 | `net_liquidation` … `realized_pnl` | 資金與保證金各欄；該券商沒有者為 `NaN`，不以任何數字湊出 |
 
 `acc_type` 只可傳 `all`/`cash`/`margin`，各券商能表明哪一種由適配器以 `SymbolBroker.acc_types` 聲明，
-要求了不支持的值即 `status=False`（`acc_type_unsupported:`），不會憑空造出戶口。`currency` 只作篩選：
+要求了不支持的值即 `status=False`（`acc_type_unsupported:`），不會憑空造出戶口。原樣透傳、不在該詞表內的
+性質（如 IB 的 `individual`）只在不過濾時列回；按 `cash`/`margin` 篩選時一律在 `message` 點名該戶口
+（`acc_type_other:`），不會令該券商在結果中無故消失而無從得知原因。`currency` 只作篩選：
 與該戶口的計價幣種不符即不返回該戶口。`broker` 省略時查全部已啟用的券商，個別券商失敗仍返回已取得的
 戶口並在 `message` 逐項說明（`ok（…，部分券商未完成）`）；全部失敗才是 `no_account:`。
 
@@ -296,8 +340,146 @@ bk.get_accounts(broker="ib", currency="USD")       # 只取以美元結算的金
 | Tiger | `get_managed_accounts`（只 `account_type=STANDARD`，即非 PAPER）；性質由 `capability`（RegTMargin/BasicCash）表明 | `get_assets`（無幣種參數） | 帳戶結算幣；不符即不返回該戶口 |
 | Webull | `get_account_list`（只有真實戶口，無需過濾）；性質為 `account_type`（實測 `MRGN`） | `get_account_balance` | 匯總幣種；指定時改讀 `account_currency_assets` 中該幣種的明細 |
 
+### 10.1 連線狀態與速度（`get_brokers`）
+```python
+bk.get_brokers()              # 四個券商並行探測
+bk.get_brokers(broker="ib")   # 只探一家
+```
+`data` 的欄位固定為 `brokers.base.BROKER_COLUMNS`：
+
+| 欄位 | 說明 |
+| --- | --- |
+| `source` | 券商 |
+| `connected` | 該次探測成敗 |
+| `latency_ms` | 探測往返毫秒數；連不上為 `NaN`（不以任何數字湊出） |
+| `accounts` | 該次讀到的戶口數 |
+| `detail` | 失敗原因；成功為空字串 |
+| `checked_at` | 探測完成的 UTC 秒 |
+
+探測用一次戶口查詢：只需連線與鑑權，**不需要行情數據權限**，因此行情權限缺失、休市或某市場沒有
+歷史數據時不會被誤報為連線斷開（實測 IB 港股歷史數據失靈期間，IB 連線仍探測為 542ms）。四家並行，
+總耗時接近最慢一家而非各家相加；超過 `.env` 的請求超時仍未返回者記為 `timeout`，不會無限等待。
+無快取，也不應定時輪詢（每次探測都會真的發一次請求）。
+
+### 11. HTTP/WS 閘道與控制台（`brokery_api`）
+與 `brokery/` 同級，只經 `Brokery` 的公開接口把功能映射為 HTTP/WebSocket，並附一個完整 dashboard
+（K 線圖 + 實時訂閱、戶口資金、標的清單、日誌窗、頂欄四家連線狀態與延遲）。
+
+```bash
+python brokery_api/run.py     # 監聽 .env 的 API_HOST/PORT，開瀏覽器即得 dashboard
+```
+
+| 端點 | 對應 |
+| --- | --- |
+| `GET /` | dashboard 頁面（不需金鑰，頁面本身不含資料） |
+| `GET /health` | 進程與配置概覽（不需金鑰，供探活） |
+| `GET /capabilities` | 欄位契約、ktype 清單、各券商能力聲明 |
+| `GET /logs?limit=` | 最近日誌（記憶體環形緩衝，新到舊） |
+| `GET /codes` | `get_code`（離線讀回） |
+| `GET /stocks?markets=`、`/futures?roots=`、`/indices?symbols=`、`/all?markets=` | 各標的清單 |
+| `GET /convert?code=&source=` | `convert` |
+| `GET /kline?code=&ktype=&count=&broker=&autype=` | `get_kline` |
+| `GET /accounts?broker=&acc_type=&currency=` | `get_accounts` |
+| `GET /brokers?broker=` | `get_brokers`（各券商連線狀態與延遲） |
+| `WS /stream` | `stream_kline`（協定見下） |
+
+- **鑑權**：金鑰自訂（`.env` 的 `API_KEY`，未設即拒絕啟動並明確報錯）。HTTP 受理 `X-API-Key`
+  或 `Authorization: Bearer` 其一（缺少 401、不符 403）；WebSocket 因瀏覽器不能自訂握手標頭，另受理
+  `?api_key=`（不符即以 code 4403 關閉）。
+- **返回**：一律 HTTP 200，`{"status":bool,"data":{"columns":[…],"rows":[[…]]},"message":str}`，`data`
+  即 DataFrame 的欄位與行；缺失值一律為 `null`（不出現非法的 `NaN`）。業務失敗（`unknown_source:`、
+  `no_account:` 等）由 `status=False` 表達，原因原樣透傳，不變成 HTTP 500。
+- **串流**：送 `{"action":"subscribe","codes":[…],"ktype":…,"count":…,"broker":…,"autype":…}`，
+  收 `subscribed` → 每次推送為 `update`（附該代碼目前**完整**的序列，客戶端整份覆蓋，不做本地合併）
+  → 到時結束為 `end`；送 `{"action":"stop"}` 即 `closed`（附還差多少秒才釋放名額）。同一券商同時只
+  容許一條串流（富途的推送回調按連線設置，兩條會互相覆蓋），第二條即 `stream_busy:`；失敗或結束時
+  名額即時歸還。歷史起點由 `/kline` 取，`/stream` 只推更新。ktype、複權與品種是否支持一律由 Brokery
+  判定，閘道不另設規則。
+- **日誌**：每個請求與每個業務結果一律寫入控制台、`logs/brokery_api.log`（滾動檔）與記憶體環形
+  緩衝（由 `/logs` 讀）；自訂金鑰一律遮罩，不會落入日誌檔。
+- **連線狀態**：dashboard 頂欄以四家券商的指示（可連／斷開 + 延遲毫秒，懸停顯示原因與戶口數）顯示，
+  由 `/brokers` 於頁面載入時探測一次，其後只由「探測連線」按鈕手動觸發（探測會真的向各家發請求，
+  故不設定時輪詢）。
+- **戶口頁**：沒有「來源」選擇，一律一次取四家全部戶口（請求不带 `broker` 參數）。進入該頁即取一次，
+  其後每 10 秒自動刷新（只在該頁可見時才請求，可勾選關閉；「取得戶口」手動刷新照樣可用）。頁頂按
+  來源列出各券商的戶口數，沒有返回者點名，避免用戶只見到「少咗一間」而不知原因。
+- **標的頁**：即時清單（股票／期貨／指數／全部）按來源分四區同時顯示 —— 一次點擊即四區一起填充
+  （後端本来就是一次向各家取齊，不需逐間點），區內不再重複 `source` 欄。每區如實顯示該家狀態：
+  「N 條」／「無返回」（理應有份却取不到，如未連線或無行情權限）／「不提供此清單」（該券商本就不提供
+  該清單，如 IB 無股票清單、Webull 無指數清單，依 `/capabilities` 的能力聲明判定）——三者含義不同，
+  不可混為一談。個別券商失敗時 `message` 以警告色顯示，結果仍算成功。各區欄位一律為
+  `brokers.base.COLUMNS`（10 欄，順序即接口原樣，只去掉區內重複的 `source` 欄）。
+- **離線 CODES**：存放好的快照不涉及即時取數，故不分區，以單一表格顯示（`source` 保留在欄位中）。
+- **讀取提示**：所有取數（K 線、戶口、標的、日誌、探測）在請求進行時明確顯示「讀取中…」並以強調色
+  標示，同時禁用觸發按鈕防止重復送出；較快的請求（如日誌）會延後約 0.4 秒才顯示，避免閃爍。
+- **金鑰記憶**：dashboard 填入的金鑰即時存入瀏覽器 `localStorage`（鍵 `gw_key`），重新載入或重開頁面
+  自動回填，其後所有請求（含 WS 訂閱）自動帶上，不需每次重填。
+
+### 12. 量化交易 Web UI（`brokery_webui`）
+與 `brokery/`、`brokery_api/` 同級的獨立進程：上方為菜單兩項——「戶口清單」（四家的戶口與資金同屏）
+與「標的列表」（上方為類型／市場／券商篩選，下方為取得的清單，默認富途）。
+
+```bash
+python brokery_webui/run.py   # 監聽 .env 的 GUI_HOST/GUI_PORT；需先啟動 brokery_api 閘道
+```
+
+- **只負責頁面與轉發，不連券商**：`/api/accounts`、`/api/capabilities` 與 `/api/symbols` 以 `X-API-Key`
+  轉發閘道的對應接口，信封原樣透傳（`/api/symbols` 按類型轉到 `/stocks`／`/futures`／`/indices`，市場與
+  券商原樣傳為 `markets`／`broker`，類型不認識即 `unknown_kind`）。理由在進程層面：閘道已持有各券商連線，IB 更只容許一個 client id，Web UI 再建一份即互相搶佔，
+  兩邊都取不到數。金鑰只在 Web UI 服務端使用，不出現在頁面或瀏覽器中。
+- **失敗口徑與閘道一致**：閘道不可達、金鑰不符或返回非信封內容，一律由 Web UI 構造
+  `{"status": false, …}` 並在 `message` 點名原因（`gateway_unreachable:`／`gateway_http_403:`），
+  不變成 HTTP 500，客戶端只需看一個欄位。未設 `API_KEY` 時在啟動時即拒绝建立應用。
+- **表格即契約**：欄位與順序一律為接口返回的 `ACCOUNT_COLUMNS`，不另設欄位；缺失值顯示破折號（不湊
+  數）、資金欄為千分位兩位小數、頁頂按來源統計戶口數（只統計實際返回者，不會憑空列出一間「0 個戶
+  口」）；`message` 帶「注意」（個別券商失敗）時以警告色顯示，結果仍算成功。
+- **標的列表**：類型（股票／期貨／指數）、市場、券商三個篩選在上方，清單在下方，欄位即 `COLUMNS`。券商
+  選項由 `/api/capabilities` 的能力聲明填充（默認 futu；不提供該品種者標註原因且不可選，不必按了才知道會
+  `type_unsupported`），市場選項只由實際返回行的 `market` 填充，頁面不硬寫券商或市場名單；真正的能力閘在
+  `core`，Web UI 不會靜靜改用別家湊數。轉類型時市場重設為全部，選項再由新品种返回的資料重建。
+- **日誌**：與閘道同一套（級別與目錄由 `API_LOG_LEVEL`/`API_LOG_DIR` 決定），但寫自己的
+  `logs/brokery_webui.log`：兩個進程共用同一個滾動檔會在滾動時互相搶佔句柄。
+
+### 13. 量化交易桌面 GUI（`brokery_gui`）
+
+與 Web UI 同一功能的桌面窗口（PySide6）：兩個分頁——「戶口清單」與「標的列表」（類型／市場／券商篩選在上、
+清單在下，默認富途）。
+
+```bash
+python brokery_gui/run.py     # 閘道地址與金鑰讀自 .env 的 API_HOST/API_PORT/API_KEY；需先啟動閘道
+```
+
+- **界面與文字分離**：三個 `.ui` 檔（`ui/main_window.ui`、`ui/accounts_page.ui`、`ui/symbols_page.ui`）在運行時由
+  QUiLoader 載入，檔內不含任何文字；顯示文字一律按鍵取自 `locales/<語言>.json`。
+- **三種語言即時切換**：繁體中文／简体中文／English 各一個 `.json`（三者鍵集合一致），頂欄切換即重貼標籤，不需
+  重建窗口、亦不重新取數；缺譯時返回鍵名本身，不憑空造一句湊數。
+- **取數只經閘道**：與 Web UI 同一理由（閘道已持有各券商連線，IB 只容許一個 client id）。請求在背景執行緒進行，
+  界面不會因券商連線（IB 可達 40s）而凍結；失敗口徑與閘道一致（`gateway_unreachable:`／`gateway_http_403:` 原樣
+  顯示，狀態列同時標為「取數失敗」），未設 `API_KEY` 即在啟動時拒绝建立客戶端。
+- **表格即契約**：欄位與順序一律由返回的 `columns` 決定（即 `ACCOUNT_COLUMNS`／`COLUMNS`），不另設欄位；缺失值
+  顯示破折號、資金欄為千分位兩位小數、按來源統計條數（只統計實際返回者）；券商選項由 `/capabilities` 的能力聲明
+  填充（默認 futu，不提供該品種者標註原因且不可選），市場選項只由實際返回行的 `market` 填充，轉類型即重設為全部。
+
+### 14. 一次過啟動閘道與 Web UI（`run_all.py`）
+
+```bash
+python run_all.py             # 兩個一齊起；只想起一個仍用上面兩個入口
+```
+
+- 兩個仍是各自獨立的進程，本檔只負責啟動與收尾：其中一個先結束（例如未設 `API_KEY`、或端口已被佔用）
+  即停止另一個並原樣返回其退出碼，不會留半個系統在背景；Ctrl+C 一併停止，收尾有 10 秒上限，不無限等待。
+- 本檔刻意不 import `brokery`：futu SDK 在匯入時即接管 SIGINT（自備的 `quit_handler` 直接結束進程），
+  接管後 Ctrl+C 不會走到收尾，兩個子進程會變成孤兒。`run_launch.py` 有一項檢查專為守住這個前提。
+
 ## 設計前提（實測結論，改動前請先讀）
-- 股票清單只出自富途：`get_stock_basicinfo` 一次取全；IB 無「一次過列出全市場股票」的接口。
+- 股票清單出自富途、Tiger 與 Webull（富途 `get_stock_basicinfo` 一次取全、Tiger `get_symbol_names`
+  按市場一次取全、Webull `list_instruments` 分頁）；IB 無「一次過列出全市場股票」的接口，故不聲明
+  `STOCK` 能力、由 `core` 統一返回 `no_source`，不為湊齊四家而改用 top-N 樣本（實測
+  `reqMatchingSymbols` 混入 BOND）。
+- 各券商對同一掛牌場所的寫法本來不同（Webull 以 HKG／XGEM／NAS／NSQ／NMS 登記，富途以 HKEX／NASDAQ
+  登記），一律原樣返回、不憑空歸一；需要回溯時讀 `raw_code`。期貨的場所則已歸一到 `codes` 詞表
+  （Webull 的 XCME／XCBT／XCEC／XNYM／HFE → CME／CBOT／COMEX／NYMEX／HKFE），否則 `market_of()`
+  無法判定市場。
 - 富途的期貨/指數批量清單（`FUTURE`/`IDX` 類型）同樣一次取全，且主連就用 `main` 後綴，與本專案
   約定一致；但其個月份為富途原生代碼（`US.10Y2609`），與 IB 的 root + 到期月無法直接對映。
 - 富途 `get_stock_basicinfo` 不支援日本市場的指數（「获取静态数据接口不支持日本市场的指数」），
@@ -368,6 +550,8 @@ python brokery/acceptance/run_futu_codes.py         # 全量 CODES：股票 + �
 python brokery/acceptance/run_futu_codes_store.py   # 取 CODES → 離線存放 → 讀回核對（需 OpenD）
 python brokery/acceptance/run_get_codes.py          # get_code：離線讀回已存放的 CODES，不連 OpenD
 python brokery/acceptance/run_get_codes.py FUTURE   # 只顯示某一類型（STOCK/FUTURE/INDEX）
+python brokery/acceptance/run_list_symbols.py      # 四家 × 三品種的標的清單：能力聲明與實測一致、欄位與順序一律為 COLUMNS、字串欄無 NaN、code 為統一代碼、未聲明品種返回 no_source、跨券商合併不重複列（需 OpenD + IB + Tiger + Webull）
+python brokery/acceptance/run_list_filter.py       # 清單的 broker 與 markets 兩個參數（core 調度口徑）：只向一家取、unknown_source／type_unsupported、markets 按行過濾、empty_list、省略 markets 用預設市場、一家失敗仍返回別家資料（以存根券商進行，不需任何連線）
 python brokery/acceptance/run_get_kline.py          # 同一 code 經 futu/ib/tiger 取 K 線並核對對齊，另核對 Webull 的取數與明確報錯（需 OpenD + IB；Tiger 需私鑰）
 python brokery/acceptance/run_get_kline.py HK.00700 week 120   # 指定代碼 / ktype / bar 數
 python brokery/acceptance/run_align_kline.py        # 四家的前復權以 futu 為準逐根並列，量化各家與它的偏差（需 OpenD + IB + Tiger + Webull；美股代碼會跳過 Webull 並打印 WARN）
@@ -375,7 +559,13 @@ python brokery/acceptance/run_align_kline.py US.NVDA day 120   # 指定代碼 / 
 python brokery/acceptance/run_stream_kline.py          # 一條連線同時串流多個代碼（futu/ib/tiger/webull），核對回呼規格與 seconds 約束（需 OpenD + IB；Tiger 需私鑰）
 python brokery/acceptance/run_stream_kline.py US.NVDA 5m 50 120   # 指定代碼（逗號分隔可多個）/ ktype / bar 數 / 秒數
 python brokery/acceptance/run_kline_matrix.py      # 品種 × 券商矩陣：品種推斷、能力閘（type_unsupported）、復權只對股票有效、指數跨券商對齊（需 OpenD + IB + Tiger）
-python brokery/acceptance/run_get_accounts.py      # 四家戶口與資金：統一欄位、只列真實且已啟用的戶口、幣種有無填到、acc_type/currency/broker 三個參數的邊界（需 OpenD + IB + Tiger + Webull）
+python brokery/acceptance/run_get_accounts.py      # 四家戶口與資金：統一欄位、只列真實且已啟用的戶口、幣種有無填到、acc_type/currency/broker 三個參數的邊界、詞表外的戶口性質（IB individual）在篩選時點名說明（需 OpenD + IB + Tiger + Webull）
+python brokery/acceptance/run_get_brokers.py   # 四家連線狀態與延遲：統一欄位、延遲為正數且戶口數與 get_accounts 一致、連不上為 NaN 並附原因、並行探測、參數邊界（需四家後端在線）
+python brokery/acceptance/run_api.py           # 閘道本身：未設金鑰拒絕啟動、HTTP/WS 鑑權、返回信封與欄位契約、JSON 取值口徑、業務失敗原樣透傳、三個清單接口的 markets／broker 原樣透傳為統一前綴（含 markets 省略時不再拋 TypeError 的回歸檢查）、串流協定與日誌遮罩（不需券商連線）
+python brokery/acceptance/run_ui.py            # dashboard 客戶端：以存根閘道 + Chromium 核對腳本無語法錯誤、頂欄四家指示、金鑰記憶與回填、探測只由載入與按鈕觸發、戶口頁自動刷新與按來源汇总、標的頁區分「不提供／無返回」、標的頁不再有「統一格式輸出」面板、離線 CODES 不分區而以單一表格顯示且欄位順序即接口原樣（不需券商連線；需 `playwright install chromium`，未裝即跳過）
+python brokery/acceptance/run_webui.py         # Web UI：以存根閘道核對轉發原樣透傳信封與金鑰只在服務端、金鑰不符與閘道不可達均明確報錯；以 Chromium 核對菜單兩項、欄位即 ACCOUNT_COLUMNS、千分位與破折號、按來源統計；標的頁先取能力聲明再取清單、券商選項由聲明填充且默認 futu（不提供該品種者標註且不可選）、表格欄位即 COLUMNS、市場選項只由返回的 market 填充、選市場與轉類型均向對應接口再取一次（不需券商連線；未裝 Chromium 即跳過）
+python brokery/acceptance/run_gui.py           # 桌面 GUI（brokery_gui）：以存根閘道 + Qt 離屏核對三個 .ui 檔內不含任何文字、三種語言各一個 .json 且鍵集合一致、切換即時生效且不重建窗口、缺譯返回鍵名、表格欄位即 ACCOUNT_COLUMNS／COLUMNS、缺失值破折號與資金欄千分位、按來源統計、券商選項由能力聲明填充且默認 futu（不提供該品種者標註且不可選）、市場選項只由返回的 market 填充、選市場與轉類型均向對應接口再取一次、閘道不可達與金鑰不符均明確報錯（不需券商連線，亦不需顯示器）
+python brokery/acceptance/run_launch.py        # 啟動器 run_all.py：以存根命令核對兩個同時啟動、先結束者停止另一個並返回其退出碼、正常結束返回 0、Ctrl+C 一併停止、預設命令即兩個既有入口、啟動器不引入券商 SDK（不需券商連線，亦不真的啟動服務）
 ```
 測試以腳本方式直接執行（不使用 pytest）：執行後即輸出 `status`、`message` 與完整代碼表，
 並以退出碼 `0`/`1` 表示成敗。
@@ -384,6 +574,14 @@ python brokery/acceptance/run_get_accounts.py      # 四家戶口與資金：統
 - 連線參數與離線資料目錄全部讀自 `.env`（`FUTU_OPEND_HOST/PORT`、`IB_HOST/PORT/CLIENT_ID`、
   `IB_REQ_TIMEOUT`、`BROKERY_DATA_DIR`、`TIGER_ID/ACCOUNT/TOKEN/PUBLIC_KEY/PRIVATE_KEY`、
   `WEBULL_APP_KEY/APP_SECRET`、`WEBULL_REGION_ID`、`WEBULL_TOKEN_DIR`）。
+- 閘道（`brokery_api`）的參數同樣只在 `.env`：`API_HOST/PORT`、`API_KEY`（自訂金鑰，
+  **未設即拒絕啟動**）、`API_SOURCES`（启用的券商，逗號分隔）、`API_AUTYPE`、`API_LOG_LEVEL`、
+  `API_LOG_DIR`（預設 `logs/`，不入版本控制）、`API_STREAM_SECONDS`（單次串流的秒數上限，客戶端
+  要求更長即被截至此值）。
+- Web UI（`brokery_webui`）只多兩個參數：`GUI_HOST`/`GUI_PORT`（預設 `127.0.0.1:8282`，變數名沿用未改）。閘道地址與金鑰
+  沿用上面的 `API_HOST`/`API_PORT`/`API_KEY`，日誌沿用 `API_LOG_*`，不另設一套。
+- 桌面 GUI（`brokery_gui`）不新增任何參數：窗口沒有填金鑰的位置，閘道地址與金鑰一律讀 `API_HOST`/`API_PORT`/
+  `API_KEY`，未設 `API_KEY` 即在啟動時明確報錯，不開一個讀不到數的窗口。
 - Tiger 的鑑權為 RSA 簽名，**必須有 `TIGER_PRIVATE_KEY`**；缺少時 `get_kline` 明確返回
   `not_configured`。該私鑰只在 developer.itigerup.com/profile **生成密鑰對的當下顯示一次**，服務端不
   保存、刷新即消失，故無法事後取回（實測：「您的Token」的「下載」導出 `tiger_openapi_token.properties`，

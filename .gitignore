@@ -5,3 +5,5 @@ __pycache__/
 .env
 brokery/data/
 *.log
+*_sdk.log.*
+logs/

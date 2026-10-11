@@ -576,13 +576,18 @@ class IbBroker(SymbolBroker):
         """以自組的 tag 清單請求 accountSummary（ib_async 的預設清單缺少需要的三個 tag）。
 
         wrapper 的 acctSummary 會把多次請求的結果合併保留，不清空會把上一次查詢的舊值一併返回。
+        取回後必須取消訂閱：IB 只容許有限數量的 accountSummary 訂閱同時存在，不取消便會累積，到上限
+        即回 error 322（Maximum number of account summary requests exceeded），其後的查詢靜默返回空值，
+        戶口因此無故消失（實測同一連線連續數次查詢即觸發，定時刷新時必定發生）。
         """
         req_id = ib.client.getReqId()
         future = ib.wrapper.startReq(req_id)
         ib.wrapper.acctSummary.clear()
         ib.client.reqAccountSummary(req_id, "All", IB_ACCOUNT_TAGS)
         await future
-        return list(ib.wrapper.acctSummary.values())
+        values = list(ib.wrapper.acctSummary.values())
+        ib.client.cancelAccountSummary(req_id)
+        return values
 
     # ---------- 內部 ----------
 

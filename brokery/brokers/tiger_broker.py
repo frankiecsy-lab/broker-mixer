@@ -1,15 +1,17 @@
-"""Tiger 適配器：以 get_bars 取 K 線，以 subscribe_kline 推送最新分鐘 bar。
+"""Tiger 適配器：以 get_bars 取 K 線，以 subscribe_kline 推送最新分鐘 bar，並提供標的清單。
 
 Tiger 的 get_bars 以 limit 指定 bar 數，與富途的 count 語義相同，故不需要像 IB 那樣由 bar 數
 反推時間跨度。返回的 time 為毫秒時間戳（本身即絕對時刻，不按市場時區解釋），amount 為成交額，
 故 turnover 有值（IB 無此欄）。
 
-只做 K 線：本專案的標的清單以富途為準，故不聲明清單能力（capabilities 為空），由 core 依
-capabilities 跳過。期貨與指數亦未實作（Tiger 需另用期貨接口與合約映射），此類代碼會由接口明確
-報錯。
+標的清單三家接口各自不同：股票與指數同出自 get_symbol_names（Tiger 把指數以句點前綴混在同一張
+符號表中，實測 US 只有 .SPX/.IXIC/.DJI/.XSP 四隻，HK 沒有），期貨則由 get_future_exchanges 與
+get_future_contracts 原生展開全部到期月，不需要種子表。
 """
 from __future__ import annotations
 
+import math
+from collections.abc import Iterable
 from datetime import datetime, timezone
 
 from tigeropen.common.consts import BarPeriod, QuoteRight
@@ -18,12 +20,27 @@ from tigeropen.quote.quote_client import QuoteClient
 from tigeropen.tiger_open_config import TigerOpenClientConfig
 from tigeropen.trade.trade_client import TradeClient
 
-from ..codes import INDEX, STOCK, CodeError, parse_code, to_display_symbol
+from ..codes import (
+    FUTURE,
+    INDEX,
+    MAIN_SUFFIX,
+    STOCK,
+    CodeError,
+    build_code,
+    currency_of,
+    market_of,
+    parse_code,
+    split_future_symbol,
+    to_display_symbol,
+)
 from ..config import get_settings
 from .base import (
     ACC_CASH,
     ACC_MARGIN,
     ANCHOR_START,
+    CAP_FUTURE,
+    CAP_INDEX,
+    CAP_STOCK,
     BarMerger,
     SymbolBroker,
     account_row,
@@ -51,6 +68,10 @@ TIGER_RIGHT = {"qfq": QuoteRight.BR, "none": QuoteRight.NR}
 
 PAGE_MAX = 1000  # 單次請求的保守 bar 數，超過即改用 SDK 的分頁接口
 
+# 統一市場前綴 → Tiger 的 Market。Tiger 只有 US/HK/CN/SG 四個市場，其中 CN 同時含上交所與深交所
+# 而 Tiger 不區分，統一格式以 SH/SZ 分列，故不支持 CN（不憑空猜交易所）。
+TIGER_MARKET = {"US": "US", "HK": "HK", "SG": "SG"}
+
 # get_managed_accounts 的 account_type：STANDARD 為真實戶口、PAPER 為模擬戶口。統一格式不再區分環
 # 境，故只取 STANDARD。capability 另為獨立欄位，含 margin 者（RegTMargin/PortfolioMargin 等）為保
 # 證金戶口，其餘（BasicCash/InstCash）為現金戶口。
@@ -74,9 +95,12 @@ def _summary_funds(summary) -> dict:
 
 
 class TigerBroker(SymbolBroker):
-    """Tiger OpenAPI 的 K 線來源（股票）。"""
+    """Tiger OpenAPI 的標的來源（股票、期貨、指數）與 K 線。"""
 
     source = "tiger"
+    # 股票與期貨為原生全量；指數只有 Tiger 符號表登記的四隻美股指數（無獨立接口），故照樣聲明，
+    # 由返回的行數自行表明其範圍。
+    capabilities = frozenset({CAP_STOCK, CAP_FUTURE, CAP_INDEX})
     # Tiger 的 time 為 bar 起點的毫秒時間戳（示例中日線為開市時刻），故以起點為錨點；週/月線經
     # align_ts 歸到所屬週期起點，與富途一致。
     kline_anchor = ANCHOR_START
@@ -135,6 +159,110 @@ class TigerBroker(SymbolBroker):
         if self._trade is None:
             self._trade = TradeClient(self._client_config())
         return self._trade
+
+    # ---------- 標的清單 ----------
+
+    def list_stocks(self, markets: Iterable[str]) -> list[dict]:
+        """股票清單：get_symbol_names 一次返回該市場的全部符號與名稱（實測 HK 3763／US 14609）。
+
+        清單接口不附帶交易所與貨幣（get_stock_details 需行情權限，實測本戶口被拒），故 exchange
+        留空；currency 由統一市場前綴推得，與富途適配器同一處理。以句點開頭者為指數，交由
+        list_indices 返回，不在此列作股票。
+        """
+        quote = self._quote_client()
+        rows: list[dict] = []
+        for market in markets:
+            tiger_market = TIGER_MARKET.get(str(market).upper())
+            if tiger_market is None:
+                raise ValueError(
+                    f"market_unsupported: Tiger 不提供 {market} 的股票清單"
+                    f"（可用：{'/'.join(sorted(TIGER_MARKET))}）"
+                )
+            for symbol, name in quote.get_symbol_names(market=tiger_market):
+                symbol = str(symbol)
+                if symbol.startswith("."):
+                    continue
+                rows.append(self.make_row(
+                    code=build_code(market, symbol),
+                    name=str(name),
+                    market=market,
+                    symbol=to_display_symbol(market, symbol),
+                    symbol_type=STOCK,
+                    currency=currency_of(market),
+                    exchange="",
+                    expiry="",
+                    raw_code=f"{tiger_market}|{symbol}",
+                ))
+        return rows
+
+    def list_indices(self, seeds: Iterable) -> list[dict]:
+        """指數清單：取 Tiger 符號表中以句點前綴登記的指數（實測僅 US 四隻）。
+
+        Tiger 沒有獨立的指數列舉接口，其指數只作為符號表的一小部分出現，故這裡返回的就是 Tiger
+        自身登記的全部指數，範圍遠小於富途；seeds 只用於限定市場，不據此補出 Tiger 沒有的指數。
+        """
+        markets = {str(seed.market).upper() for seed in seeds}
+        quote = self._quote_client()
+        rows: list[dict] = []
+        for market, tiger_market in TIGER_MARKET.items():
+            if market not in markets:
+                continue
+            for symbol, name in quote.get_symbol_names(market=tiger_market):
+                symbol = str(symbol)
+                if not symbol.startswith("."):
+                    continue
+                rows.append(self.make_row(
+                    code=build_code(market, symbol),
+                    name=str(name),
+                    market=market,
+                    symbol=symbol,
+                    symbol_type=INDEX,
+                    currency=currency_of(market),
+                    exchange="",
+                    expiry="",
+                    raw_code=f"{tiger_market}|{symbol}",
+                ))
+        return rows
+
+    def list_futures(self, seeds: Iterable) -> list[dict]:
+        """期貨清單：get_future_exchanges 列出接入的交易所，逐個以 get_future_contracts 取全部
+        合約（實測 CME 240／HKEX 84，已含全部到期月與主連），故不需要種子表；seeds 只作市場限定。
+
+        主連以 contract_month 為空識別（continuous 欄不可靠，實測 CME 的 ESmain 回報 False），統一
+        寫成 root+main；個月份的到期月以 contract_month（YYYYMM）填入 expiry。trade=False 的合約不可
+        交易，不列入。Tiger 接入但無統一市場前綴的交易所（如 EUREX）一律跳過，不憑空造出市場。
+        """
+        wanted = {str(seed.market).upper() for seed in seeds}
+        rows: list[dict] = []
+        for venue in self._quote_client().get_future_exchanges().itertuples():
+            frame = self._quote_client().get_future_contracts(exchange=venue.code)
+            for item in frame.itertuples():
+                if not item.trade:
+                    continue
+                currency = _text(item.currency)
+                exchange = _text(item.exchange) or str(venue.code)
+                try:
+                    market = market_of(exchange, currency)
+                except CodeError:
+                    continue
+                if market not in wanted:
+                    continue
+                contract = _text(item.contract_code)
+                root = (_text(item.type) or split_future_symbol(contract)[0]).upper()
+                expiry = _text(item.contract_month)
+                symbol = root if expiry else f"{root}{MAIN_SUFFIX}"
+                rows.append(self.make_row(
+                    code=build_code(market, symbol),
+                    name=_text(item.name),
+                    market=market,
+                    symbol=to_display_symbol(market, symbol),
+                    symbol_type=FUTURE,
+                    currency=currency,
+                    exchange=exchange,
+                    expiry=expiry,
+                    raw_code=f"FUT|{contract}|{exchange}|{currency}|{expiry}",
+                ))
+        return rows
 
     # ---------- K 線 ----------
 
@@ -297,6 +425,16 @@ class TigerBroker(SymbolBroker):
 def _native_symbol(market: str, symbol: str) -> str:
     """轉為 Tiger 原生符號。Tiger 的港股以五位補零登記（700 → 00700），與統一顯示格式相同。"""
     return to_display_symbol(market, symbol)
+
+
+def _text(value) -> str:
+    """把 DataFrame 空值（None/NaN）還原為空字串：統一清單欄位以空字串表示缺失。"""
+    try:
+        if value is None or math.isnan(value):
+            return ""
+    except TypeError:
+        pass
+    return str(value)
 
 
 def _bare_key(value: str) -> str:

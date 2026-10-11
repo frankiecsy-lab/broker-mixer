@@ -1,6 +1,7 @@
 """驗收 `Brokery.get_accounts`：四家一律以 ACCOUNT_COLUMNS 返回戶口與資金，核對格式統一、只列真實且
 已啟用的戶口、currency 欄有無真係填到，以及 acc_type / currency / broker 三個參數在非法或不支持時明確
-報錯。
+報錯。券商原樣透傳、不在統一詞表內的戶口性質（如 IB 的 individual）在按 acc_type 篩選時必須在 message
+點名說明，不得靜默丟列。
 
 以腳本方式直接執行：
     python brokery/acceptance/run_get_accounts.py
@@ -98,6 +99,13 @@ def main() -> dict:
                     checks.append((f"{name} 的 {kind} 不可作 acc_type 篩選（明確報錯）",
                                    not rejected["status"] and rejected["message"].startswith("bad_acc_type"),
                                    rejected["message"]))
+                    # 改用統一詞表篩選時，這類戶口既不可靜默消失（否則該券商在結果中無故少咗一间），
+                    # 亦不可憑空出現：必須在 message 中點名該戶口與其性質。
+                    filtered = b.get_accounts(broker=name, acc_type=ACC_MARGIN)
+                    checks.append((f"{name} 的 {kind} 在 acc_type 篩選時點名說明（不靜默丟列）",
+                                   "acc_type_other" in filtered["message"]
+                                   and str(frame["account_id"].iloc[0]) in filtered["message"],
+                                   filtered["message"]))
 
         # 一次過查全部券商：個別券商失敗不影響其余，且同一戶口的同一幣種只留一列。
         combined = all_rows["data"]

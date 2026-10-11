@@ -14,7 +14,9 @@ from zoneinfo import ZoneInfo
 
 from ..codes import FUTURE, INDEX, STOCK, is_secondary_exchange
 
-# 統一輸出欄位。code 為統一代碼；raw_code 保留券商原生標識以便回溯核對。
+# 統一輸出欄位。code 為統一代碼；raw_code 保留券商原生標識以便回溯核對。欄位與順序對所有券商
+# 一律相同；該券商沒有這個概念者一律留空字串（例如 Tiger 的股票清單唔附帶 exchange），嚴禁為
+# 湊齊欄位而造數。
 COLUMNS = [
     "code",
     "name",
@@ -69,6 +71,11 @@ ACCOUNT_COLUMNS = [
 # 戶口性質的統一詞表。各券商的原生寫法由適配器映射到此處（富途 acc_type、Tiger capability、
 # Webull account_type（MRGN）、IB AccountType）。無法判斷的寫法一律原樣返回，不憑空歸類。
 ACC_CASH, ACC_MARGIN = "cash", "margin"
+
+# 統一券商連線狀態欄位。connected 為該次探測成敗；latency_ms 為探測往返毫秒數，探測失敗時為 NaN
+# （不以任何數字湊出）；accounts 為該次讀到的戶口數；detail 為失敗原因或空字串；checked_at 為
+# 探測完成的 UTC 秒。探測以一次戶口查詢進行，故同時驗證連線與鑑權，且不需要行情數據權限。
+BROKER_COLUMNS = ["source", "connected", "latency_ms", "accounts", "detail", "checked_at"]
 
 # 統一 ktype 詞表 → 每根 bar 的分鐘數。日/周/月以分鐘計，方便 IB 由 bar 數換算時間跨度。
 BAR_MINUTES = {

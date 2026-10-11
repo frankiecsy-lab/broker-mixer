@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SymbolsPage</class>
+ <widget class="QWidget" name="SymbolsPage">
+  <layout class="QVBoxLayout" name="pageLayout">
+   <item>
+    <layout class="QHBoxLayout" name="filterLayout">
+     <item>
+      <widget class="QLabel" name="kindLabel"/>
+     </item>
+     <item>
+      <widget class="QComboBox" name="kindCombo"/>
+     </item>
+     <item>
+      <widget class="QLabel" name="marketLabel"/>
+     </item>
+     <item>
+      <widget class="QComboBox" name="marketCombo"/>
+     </item>
+     <item>
+      <widget class="QLabel" name="brokerLabel"/>
+     </item>
+     <item>
+      <widget class="QComboBox" name="brokerCombo"/>
+     </item>
+     <item>
+      <widget class="QPushButton" name="fetchButton"/>
+     </item>
+     <item>
+      <spacer name="filterSpacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QTableWidget" name="symbolsTable">
+     <property name="editTriggers">
+      <set>QAbstractItemView::NoEditTriggers</set>
+     </property>
+     <property name="selectionBehavior">
+      <enum>QAbstractItemView::SelectRows</enum>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="summaryLayout">
+     <item>
+      <widget class="QLabel" name="summaryLabel"/>
+     </item>
+     <item>
+      <widget class="QLabel" name="messageLabel">
+       <property name="wordWrap">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

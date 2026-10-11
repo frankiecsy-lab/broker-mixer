@@ -270,3 +270,180 @@
 - 影響：`list_futures` 恢復返回主連行（此前 IB 對所有種子 root 的主連一律 0 筆），`US.10Ymain`、
   `US.ESmain`、`US.ZNmain` 等主連 K 線亦恢復可取；`run_kline_matrix.py` 的 `ib US.10Ymain` 一項由
   `unresolvable` 轉為通過。
+
+### 新增（HTTP/WS 閘道與控制台）
+- `brokery_api/`（與 `brokery/` 同級）：以 FastAPI 把 Brokery 的全部能力對外為 HTTP 與
+  WebSocket，並附一個瀏覽器 dashboard（`ui.html`，ECharts 畫 K 線）。`run.py` 按 `.env` 的
+  host/port 起 uvicorn。
+- 鑑權為自訂金鑰：`X-API-Key` 或 `Authorization: Bearer` 皆受理；WebSocket 因瀏覽器不能自訂握手
+  標頭，另受理 `?api_key=`。未設 `API_KEY` 時 `create_app` 與 `run.py` 一律明確報錯並拒絕
+  啟動（閘道會返回戶口與資金）。
+- 接口：`/`（控制台）、`/health`、`/capabilities`（欄位契約與各券商能力聲明）、`/logs`、`/codes`、
+  `/stocks`、`/futures`、`/indices`、`/all`、`/convert`、`/kline`、`/accounts`、`/brokers`、`WS /stream`。
+  一律沿用 Brokery 的 `{"status","data","message"}` 信封；業務失敗仍為 HTTP 200（WS 為 `error`
+  事件），原因原樣透傳，不改寫成 HTTP 錯誤碼。
+- `frame_payload` 統一 DataFrame→JSON：缺失值（NaN/None/NA/NaT）一律為 `null`、整數與時間戳為整數，
+  輸出文本不含非法的 `NaN`；`rows` 可按 `columns` 原樣重建 DataFrame。
+- 串流：`WS /stream` 以 `subscribe`/`stop` 協定對應 `stream_kline`，每條 `update` 帶該代碼的完整序列
+  （客戶端直接覆蓋，不做本地合併）。每券商同時只容許一條：名額於回報 `subscribed` 前登記，並在执行
+  緒真正結束時、推送 `end`/`error` 之前歸還，故收到收尾事件即可立即重新訂閱；`stop` 只標記結束並回報
+  `release_in`（`stream_wait` 無停止鉤子，需待 `seconds` 屆滿）。
+- 日誌三處輸出（`brokery_api/log.py`）：控制台、`logs/brokery_api.log` 滾動檔、最近若干條的
+  記憶體環形緩衝（經 `/logs` 讀，按新到舊）；金鑰一律遮罩。
+- 配置全部走 `.env`（`API_HOST`/`_PORT`、`API_KEY`、`_SOURCES`/`_AUTYPE`/`_LOG_*`/`_STREAM_SECONDS`），
+  經 `brokery/config.py` 讀取；`Brokery.adapters()` 新增，供閘道讀各券商能力聲明，閘道本身不重複做
+  能力校验（不支持仍由 core 統一拒绝）。
+- `requirements.txt` 新增 `fastapi`、`uvicorn`、`websockets`、`httpx`。
+- `brokery/acceptance/run_api.py`：驗收閘道這一層（金鑰缺失/錯誤、Bearer、WS 鑑權、欄位契約、
+  JSON 取值口徑、失敗透傳、串流協定與名額、日誌遮罩）。一律 `sources=()` 並以存根代替串流，故不需
+  券商連線、任何環境可重複執行（現 40 項，含 `/brokers`）。
+
+### 新增（券商連線狀態與速度）
+- `brokers.base.BROKER_COLUMNS`：`source`/`connected`/`latency_ms`/`accounts`/`detail`/`checked_at`。
+- `Brokery.get_brokers(broker=)`：四家並行探測，一律以該欄位返回。探測即一次 `get_accounts(None)`，
+  只驗證連線與鑑權、**不需要行情數據權限**，故行情權限缺失或某市場無歷史數據不會被誤報為斷開（實測
+  IB 港股歷史數據失靈期間，IB 連線仍探測為 542ms）。連不上時 `connected=False`、`latency_ms` 為
+  `NaN`（不以任何數字湊出）並附原因；超過 `.env` 的請求超時即記 `timeout`。無快取、不輪詢。
+- `GET /brokers?broker=`；dashboard 頂欄以四家指示顯示可連／斷開與延遲毫秒（懸停顯示原因與戶口數），
+  頁面載入時探測一次，其後只由「探測連線」按鈕手動觸發。
+- `brokery/acceptance/run_get_brokers.py`（22 項，需四家後端在線）與 `run_api.py` 的 `/brokers` 檢查
+  （以存根令 `latency_ms` 的缺失值口徑可離線重複驗證）。
+
+### 修復（dashboard 客戶端）
+- `brokery_api/ui.html` 的 `probeBrokers()` 少一個右括號（`esc(r[at('source']))` 應為
+  `esc(r[at('source')])`）。內聯腳本因此整段無法解析：頁面載入後零個請求、「連接」按鈕與金鑰記憶全部
+  失效、頂欄四家指示不出現，即一個括號造成三個症狀。Node 與 Chromium 的報錯一致（`missing ) after
+  argument list`），但只有真瀏覽器能定位到具體行。
+- 新增 `brokery/acceptance/run_ui.py`（9 項）：以存根閘道（自配端口，不佔用 `API_PORT`）+ Chromium
+  驗收客戶端，正是先前缺少的這一層才讓上述錯誤漏過；未裝 Chromium 即跳過並返回成功。
+- 新增依賴 `playwright`（只供驗收；瀏覽器需另執行 `playwright install chromium`）。
+
+### 變更（戶口頁與標的來源標示）
+- `get_accounts`：按 `cash`/`margin` 篩選時，詞表外且原樣透傳的戶口性質（IB `AccountType=INDIVIDUAL`
+  → `individual`）一律在 `message` 點名該戶口（`acc_type_other:`）。此前該戶口只是靜默消失，結果變成
+  「無故少咗一间 IB」而無從得知原因；不過濾時照樣列回，篩選時亦不會憑空出現。
+- `brokery_api/ui.html`：新增 `sourceSummary()`（按來源汇总各頁取數，沒有返回者點名；標的頁依
+  `/capabilities` 的能力聲明區分「不提供」與「無返回」，兩者含義不同）與 `sourceFirst()`（`source`
+  移到第一欄，合併清單必須一眼見到每條出自邊間）；`note()` 對 `status=True` 但 `message` 帶
+  「注意：／部分…失敗」者改用警告色（仍算成功）。
+- 戶口頁：進入該頁即取一次全部戶口，其後每 10 秒自動刷新（只在该頁可見時才請求，可勾選關閉），
+  「取得戶口」手動刷新保留。
+- `run_ui.py` 9 → 19 項：存根新增 `/accounts`、`/stocks` 與 `capabilities.adapters.capabilities`，
+  以真瀏覽器驗自動刷新（10 秒內再取一次、取消後不再取）與來源汇总的三種狀態（有返回／無返回／不提供）。
+- `run_get_accounts.py` 38 → 39 項：IB 的 `individual` 在 `acc_type=margin` 篩選時必須點名該戶口，
+  實測返回 `no_account: acc_type_other: ib 的 U11976982 為 individual（非 cash/margin），未列入`。
+
+### 變更（讀取提示、戶口不分來源、標的分四區）
+- `brokery_api/ui.html`：新增 `loading()`（請求進行時以強調色顯示「讀取…中…」，較快的請求延後約
+  0.4 秒才顯示以免閃爍）與 `withBusy()`（請求期間禁用觸發按鈕，防止重復送出）；K 線、戶口、標的、
+  日誌、探測五條取數路徑一律套用。此前只能靠結果表格突然變化判斷有無在取數。
+- 標的頁：即時清單改為按來源分四區同時顯示（`buildPanels()` 先建四區並各自顯示讀取中，`filterCodes()`
+  按 `source` 分組填充），一次點擊即四區一起返回 —— 後端本来就是一次向各家取齊，不需逐間點。各區
+  如實顯示「N 條／無返回／不提供此清單」（後兩者含義不同，前者依 `/capabilities` 判定）；區內以
+  `dropSource()` 去掉重複的 `source` 欄。離線 CODES 不涉及即時取數，仍以單一表格顯示。
+- 戶口頁：移除「來源」選擇，一律一次取四家全部戶口（請求不带 `broker` 參數）。四家同屏先對照先決定，
+  比逐間點更合理。
+- `run_ui.py` 19 → 27 項：存根對 `/stocks` 故意延遲 0.8 秒以觀察讀取提示；新增四區同時填充、三種
+  區內狀態、區內不重複 `source` 欄、離線 CODES 不分區等檢查。
+
+### 新增（四家皆有標的清單）
+- Tiger 適配器：`list_stocks`（`get_symbol_names` 按市場一次取全，實測 HK 3,763／US 14,609；接口不附
+  掛牌場所，`exchange` 一律空字串）、`list_futures`（`get_future_exchanges` + `get_future_contracts`
+  原生批量，實測 649 條且含種子外的 MEUR／ZM／XW 等，不需種子表；`trade=False` 者不列）、
+  `list_indices`（符號表中句點前綴的 4 隻美股指數）。
+- Webull 適配器：`list_stocks`（`list_instruments` 按 `category` + `sub_category` 分頁，只取
+  `status=OC`，實測 HK 3,170／US 12,306；429 屬限速故等待後重試）、`list_futures`（無批量接口，
+  按種子 root 逐個 `get_futures_instrument(code=root)` 展開，實測 41 條／14 個 root；只掛近月、無
+  主連概念，故不生成 `main` 行；場所代號 XCME／XCBT／XCEC／XNYM／HFE 歸一到 `codes` 詞表，否則
+  `market_of()` 無法判定市場）。
+- 能力聲明一律按實測、不湊齊對稱：futu 與 tiger 為 STOCK/FUTURE/INDEX；**ib 不含 STOCK**（空 symbol
+  的 `reqContractDetails` 150s 無回應、`reqMatchingSymbols` 只為 top-N 且混入 BOND、`reqScannerData`
+  error 162）；**webull 不含 INDEX**（接口沒有指數類別）。未聲明的品種由 `core._gather` 統一返回
+  `no_source`，適配器不自行返回空表冒充支援。
+- `brokers/base.py`：`COLUMNS` 註釋明確寫出字串欄無值一律為空字串（不出現 NaN），嚴禁為湊齊欄位造數。
+- `brokery_api/ui.html`：離線 CODES 的單一表格由 `#c-merged` 改為 `#c-raw`（即時清單仍只按來源分四區，
+  不另設跨來源的合併表格）。
+- 新增 `run_list_symbols.py`：四家 × 三品種逐項核對（能力聲明與實測一致、欄位與順序固定、字串欄無
+  NaN、`code` 為 `<市場>.<符號>`、期貨 `expiry` 一律為空或 `YYYYMM(DD)`、未聲明品種返回 `no_source`、
+  跨券商合併同一合約不重複列）。`run_ui.py` 27 → 29 項（真實能力存根、離線 CODES 以單一表格顯示）。
+- 實測更正：以 root 表達合約的三家（IB／Tiger／Webull）同一 `code` 會跨多個到期月，故期貨行的唯一鍵
+  為 `code` + `expiry`；跨券商合併去重後某家可以完全不出現（Webull 的 ES 兩個月與 Tiger 逐欄相同，
+  `message` 仍為 `ok`），這是去重而非失敗。
+
+### 新增（量化交易 Web GUI）
+- `brokery_gui/`（與 `brokery/`、`brokery_api/` 同級）：FastAPI 頁面應用，上方菜單目前只有一項
+  「戶口清單」。`run.py` 按 `.env` 的 `GUI_HOST`/`GUI_PORT`（預設 `127.0.0.1:8282`）起 uvicorn。
+- **GUI 不連券商，只轉發閘道**：`/api/accounts` 以 `X-API-Key` 請求閘道的 `/accounts` 並原樣透傳
+  信封。決定性理由在進程層面：閘道進程已持有各券商連線，IB 只容許一個 client id（先前實測
+  `clientId 99 already in use` → Error 326），GUI 自己再建一份連線即互相搶佔，兩邊都取不到數。金鑰
+  只在 GUI 服務端使用，不出現在頁面與瀏覽器中。
+- 失敗口徑與閘道一致：閘道不可達、金鑰不符（4xx）、回應不是信封時，一律由 GUI 構造
+  `status=False` 並點名原因（`gateway_unreachable:`／`gateway_http_403:`），不變成 HTTP 500；
+  轉發超時取 60s，必須高於閘道內部最慢的兜底（IB 連線 40s），否則用戶見到的是 GUI 超時而不是券商
+  實際給出的原因。未設 `API_KEY` 時 `create_app` 即拒絕建立應用。
+- `brokery_api/log.py`：`setup_logging()` 新增 `logger_name`/`file_name` 參數（預設不變），GUI 以
+  logger `brokery.gui` 寫 `logs/brokery_gui.log`。兩個進程共用同一個 `RotatingFileHandler` 檔案時，
+  滾動會令其中一方的句柄指向已被改名的檔案，故必須分開寫。
+- `home.html`：表格欄位與順序即接口返回的 `ACCOUNT_COLUMNS`（不另設欄位），缺失值顯示破折號、資金欄
+  千分位兩位小數、按實際返回的行統計各來源戶口數（不會憑空列出一間「0 個戶口」）、`message` 帶
+  「注意」時以警告色顯示。
+- `brokery/acceptance/run_gui.py`（18 項）：存根閘道 + 真 HTTP（系統分配端口，不佔用 `API_PORT`）+
+  Chromium。核對轉發逐字透傳信封與 `X-API-Key`、頁面不含金鑰、金鑰不符與閘道不可達均明確報錯、
+  未設金鑰拒绝啟動；再以真瀏覽器核對菜單只有一項、進入即取一次、欄位即 `ACCOUNT_COLUMNS`、千分位與
+  破折號、來源統計與警告色、「重新整理」再取一次。不需券商連線。
+- 實測（真閘道 + 真瀏覽器）：`/api/accounts` 返回 6 個戶口（futu 2／ib 1／tiger 1／webull 2），15 欄
+  與 `ACCOUNT_COLUMNS` 逐欄一致；頁面頂欄顯示「已連接閘道」、四枚來源統計、IB 缺失的三欄為破折號。
+
+### 新增（一次過啟動閘道與 GUI）
+- `run_all.py`（項目根目錄）：以 `sys.executable` 直接啟動 `brokery_api/run.py` 與 `brokery_gui/run.py`
+  兩個進程（不經 shell，Windows / Ubuntu / Docker 一致）。其中一個先結束即停止另一個並原樣返回其退出碼
+  （未設 `API_KEY`、端口已被佔用均會這樣反映，不會留半個系統在背景），Ctrl+C 一併停止；收尾先
+  `terminate()`，最多等 10 秒才 `kill()`，不無限等待。
+- 本檔刻意不 import `brokery`：連 `brokery.config` 都會經 `brokery/__init__.py` 載入 futu / ib_async /
+  tigeropen，而 futu SDK 在匯入時即把 SIGINT 換成自己的 `quit_handler`（直接結束進程、退出碼 0），令
+  `except KeyboardInterrupt` 與後面的收尾完全不會執行，兩個子進程變成孤兒。
+- `brokery/acceptance/run_launch.py`（7 項）：以存根命令代替兩個入口，核對兩個同時啟動、先結束者停止
+  另一個並返回其退出碼、兩者正常結束返回 0、Ctrl+C 一併停止兩個、預設命令即兩個既有入口、啟動器不引入
+  券商 SDK。不需券商連線，亦不真的啟動服務；需 `psutil`（已列入 `requirements.txt`）。
+- 實測（真 `run_all.py`、空 `API_SOURCES`、系統分配端口）：兩個端口同時回應、`/health` 為真、GUI 頁面含
+  「戶口清單」、GUI 經剛啟動的閘道取數（`no_account`，屬業務結果而非 HTTP 錯誤）；Ctrl+C 後兩個端口均釋放。
+  Windows 以控制台事件結束 Python 進程一律返回 `0xC000013A`（STATUS_CONTROL_C_EXIT），即使進程自己已捕獲
+  `KeyboardInterrupt`，屬平台行為而非收尾失敗，故實測接受 `0` 與 `0xC000013A` 兩種。
+
+### 新增（GUI「標的列表」頁；清單可按券商與市場取）
+- `core`：`list_stocks` / `list_futures` / `list_indices` 新增 `broker` 與 `markets` 兩個參數，與
+  `get_kline`／`get_accounts` 同一口徑。`broker` 指定只向一家取，能力閘由適配器聲明、`core` 統一拒绝：
+  未啟用即 `unknown_source`，該家未聲明該品種即 `type_unsupported`（並說明它只提供什麼），一律明確報錯而
+  不靜默改用別家湊數。`markets` 只過濾返回行的 `market`，用於沒有市場參數的接口（期貨／指數）；股票清單
+  的市場仍由適配器自己處理，這一層只確保返回的確實是所請求的市場。取到了但全部不在指定市場即 `empty_list`，
+  不以空表冒充成功。
+- **修正**：`list_stocks(markets=None)` 會因 `tuple(m.upper() for m in None)` 拋 `TypeError`。閘道的
+  `GET /stocks` 不帶 `markets` 時必然傳 `None`，故控制台「標的清單全部取不到、一直讀取中」由此而來
+  （`api_failed: TypeError`，從不返回可用資料）。現省略該參數即用 `DEFAULT_STOCK_MARKETS`。
+- 閘道：`/stocks`、`/futures`、`/indices` 接受 `markets`（逗號分隔，大寫為統一前綴）與 `broker`，原樣傳入
+  `core`；能力閘與空清單一律由 `core` 決定，閘道不自行改選別家。
+- `brokery_gui`：菜單加第二項「標的列表」。`/api/symbols` 按類型（股票／期貨／指數）轉到對應的清單接口，
+  市場與券商原樣傳為 `markets`／`broker`，類型不認識即 `unknown_kind`；`/api/capabilities` 轉發能力聲明，
+  供頁面填充券商選項（頁面不硬寫券商名單）。不提供該品種的券商在選項上標註原因且不可選，用戶不必按了就
+  知道會 `type_unsupported`。市場選項只由實際返回行的 `market` 填充，不憑空給出前綴；轉類型時重設為全部
+  市場，選項再由新品种重建。默認券商為 futu。
+- `brokery/acceptance/run_list_filter.py`（10 項）：以進程內存根券商驗收上述兩個參數的調度口徑
+  （`unknown_source`／`type_unsupported`／`markets` 按行過濾／`empty_list`／省略 markets 用預設市場／一家
+  失敗仍返回別家資料），不需任何連線。`run_api.py` 增至 47 項（參數透傳與 `markets=None` 不再拋異常的
+  回歸檢查）、`run_gui.py` 增至 30 項（類型與市場/券商的轉發、券商選項由能力聲明填充且默認 futu、市場選項
+  只由返回值填充、轉類型即轉接口並重設市場）。
+
+### 更名（`brokery_gui` → `brokery_webui`）
+- 目錄與套件、啟動入口（`brokery_webui/run.py`）、`run_all.py` 的預設入口、日誌檔
+  （`logs/brokery_webui.log`，logger `brokery.webui`）與驗收腳本（`run_webui.py`）一併改名；行為與接口不變。
+- `.env` 的 `GUI_HOST`/`GUI_PORT` 與 `config.py` 的 `gui_host`/`gui_port` 未改，既有 `.env` 不需改動作。
+
+### 量化交易桌面 GUI（`brokery_gui`，PySide6）
+- 新增與 `brokery_webui` 同功能的桌面窗口：兩個分頁（戶口清單、標的列表，篩選為類型／市場／券商，默認富途）。
+  只經 `brokery_api` 閘道取數，不連券商、不另設欄位（表格欄位一律由返回的 `columns` 決定），失敗口徑與閘道一致。
+  取數在 `QThread` 背景執行，界面不因券商連線（IB 可達 40s）而凍結。
+- 界面與文字分離：三個 `.ui` 檔在運行時由 QUiLoader 載入，檔內不含任何文字；顯示文字一律按鍵取自
+  `locales/<語言>.json`。繁體中文／简体中文／English 各一個語言檔（鍵集合一致），頂欄即時切換、不需重建窗口，
+  缺譯時返回鍵名本身。
+- `requirements.txt` 加 `PySide6>=6.6`；新增 `brokery/acceptance/run_gui.py`（28 項），以存根閘道 + Qt 離屏
+  （`QT_QPA_PLATFORM=offscreen`）驗收，不需券商連線亦不需顯示器。

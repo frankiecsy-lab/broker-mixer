@@ -37,6 +37,16 @@ class Settings:
     webull_sim_app_secret: str
     webull_region_id: str
     webull_token_dir: Path
+    api_host: str
+    api_port: int
+    api_key: str
+    api_sources: tuple[str, ...]
+    api_autype: str
+    api_log_level: str
+    api_log_dir: Path
+    api_stream_seconds: float
+    gui_host: str
+    gui_port: int
 
 
 def get_settings() -> Settings:
@@ -61,7 +71,23 @@ def get_settings() -> Settings:
         webull_sim_app_secret=os.getenv("WEBULL_SIM_APP_SECRET", ""),
         webull_region_id=os.getenv("WEBULL_REGION_ID", "hk"),
         webull_token_dir=_path("WEBULL_TOKEN_DIR", "brokery/data/webull_token"),
+        api_host=os.getenv("API_HOST", "127.0.0.1"),
+        api_port=int(os.getenv("API_PORT", "8181")),
+        api_key=os.getenv("API_KEY", "").strip(),
+        api_sources=_names("API_SOURCES", "futu,ib,tiger,webull"),
+        api_autype=os.getenv("API_AUTYPE", "qfq"),
+        api_log_level=os.getenv("API_LOG_LEVEL", "INFO"),
+        api_log_dir=_path("API_LOG_DIR", "logs"),
+        api_stream_seconds=float(os.getenv("API_STREAM_SECONDS", "300")),
+        gui_host=os.getenv("GUI_HOST", "127.0.0.1"),
+        gui_port=int(os.getenv("GUI_PORT", "8282")),
     )
+
+
+def _names(name: str, default: str) -> tuple[str, ...]:
+    """讀取逗號分隔的名單（如启用的券商）。未設定時用預設，設定為空即得空名單。"""
+    raw = os.getenv(name, default)
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
 
 
 def _read_key(name: str) -> str:

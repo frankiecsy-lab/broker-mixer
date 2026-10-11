@@ -1,8 +1,9 @@
 """Brokery：多券商標的清單、K 線與戶口的統一入口。
 
 對外只有一個 class。所有方法一律返回 {"status": bool, "data": DataFrame, "message": str}，
-其中 data 的欄位固定為 brokers.base.COLUMNS（清單）、brokers.base.K_COLUMNS（K 線）或
-brokers.base.ACCOUNT_COLUMNS（戶口），code 一律為統一代碼（見 codes 模組）。
+其中 data 的欄位固定為 brokers.base.COLUMNS（清單）、brokers.base.K_COLUMNS（K 線）、
+brokers.base.ACCOUNT_COLUMNS（戶口）或 brokers.base.BROKER_COLUMNS（連線狀態），code 一律為統一
+代碼（見 codes 模組）。
 
 各券商的能力並不對稱，由 capabilities 調度而非強行湊齊：股票、期貨與指數的批量清單均由
 富途按（市場, 證券類型）一次取全；IB 依種子展開所有到期月與交易所，並負責代碼轉換。某類
@@ -11,7 +12,10 @@ brokers.base.ACCOUNT_COLUMNS（戶口），code 一律為統一代碼（見 code
 """
 from __future__ import annotations
 
+import time
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 
 import pandas as pd
 
@@ -20,6 +24,7 @@ from .brokers.base import (
     ACC_CASH,
     ACC_MARGIN,
     ACCOUNT_COLUMNS,
+    BROKER_COLUMNS,
     COLUMNS,
     K_COLUMNS,
     SymbolBroker,
@@ -30,6 +35,7 @@ from .brokers.ib_broker import IbBroker
 from .brokers.tiger_broker import TigerBroker
 from .brokers.webull_broker import WebullBroker
 from .codes import FUTURE, INDEX, STOCK, CodeError, classify_symbol, parse_code
+from .config import get_settings
 from .store import StoreError
 
 BROKERS = {"futu": FutuBroker, "ib": IbBroker, "tiger": TigerBroker, "webull": WebullBroker}
@@ -63,6 +69,18 @@ def _accounts_fail(message: str) -> dict:
     return {"status": False, "data": pd.DataFrame([], columns=ACCOUNT_COLUMNS), "message": message}
 
 
+def _brokers_frame(rows: list[dict]) -> pd.DataFrame:
+    return pd.DataFrame(rows, columns=BROKER_COLUMNS)
+
+
+def _brokers_ok(rows: list[dict], message: str) -> dict:
+    return {"status": True, "data": _brokers_frame(rows), "message": message}
+
+
+def _brokers_fail(message: str) -> dict:
+    return {"status": False, "data": _brokers_frame([]), "message": message}
+
+
 class Brokery:
     """以統一代碼格式取得標的清單與 K 線，並取得各券商的戶口與資金。"""
 
@@ -84,6 +102,10 @@ class Brokery:
         """目前啟用的券商名稱。"""
         return list(self._brokers)
 
+    def adapters(self) -> dict[str, SymbolBroker]:
+        """目前啟用的適配器實例（唯讀用途：供閘道查詢各券商的能力聲明，不應用它直接取數）。"""
+        return dict(self._brokers)
+
     def close(self) -> None:
         for broker in self._brokers.values():
             broker.close()
@@ -96,20 +118,30 @@ class Brokery:
 
     # ---------- 清單 ----------
 
-    def list_stocks(self, markets: Iterable[str] = DEFAULT_STOCK_MARKETS) -> dict:
-        """全市場股票清單。markets 為統一市場前綴（如 HK、US、SH）。"""
-        wanted = tuple(m.upper() for m in markets)
-        return self._gather(STOCK, lambda b: b.list_stocks(wanted), "股票清單")
+    def list_stocks(self, markets: Iterable[str] | None = None, broker: str | None = None) -> dict:
+        """股票清單。markets 為統一市場前綴（如 HK、US、SH），省略即用 DEFAULT_STOCK_MARKETS；
+        broker 指定只向該券商取（未啟用即 unknown_source，不提供該品種即 type_unsupported，
+        一律明確報錯，不會靜靜改用別家湊數）。"""
+        wanted = tuple(m.upper() for m in markets) if markets else DEFAULT_STOCK_MARKETS
+        return self._gather(STOCK, lambda b: b.list_stocks(wanted), "股票清單",
+                            broker=broker, markets=wanted)
 
-    def list_futures(self, roots: Iterable[str] | None = None) -> dict:
-        """期貨清單：含主連（code 帶 main 後綴）與所有到期月（expiry 欄）。"""
+    def list_futures(self, roots: Iterable[str] | None = None,
+                     markets: Iterable[str] | None = None, broker: str | None = None) -> dict:
+        """期貨清單：含主連（code 帶 main 後綴）與所有到期月（expiry 欄）。
+
+        期貨接口沒有市場參數，故 markets（統一市場前綴）由本層按返回行的 market 過濾。
+        """
         seeds = _pick(universe.FUTURE_ROOTS, roots, "root")
-        return self._gather(FUTURE, lambda b: b.list_futures(seeds), "期貨清單")
+        return self._gather(FUTURE, lambda b: b.list_futures(seeds), "期貨清單",
+                            broker=broker, markets=markets)
 
-    def list_indices(self, symbols: Iterable[str] | None = None) -> dict:
-        """指數清單。"""
+    def list_indices(self, symbols: Iterable[str] | None = None,
+                     markets: Iterable[str] | None = None, broker: str | None = None) -> dict:
+        """指數清單。markets 的處理同期貨清單（按返回行的 market 過濾）。"""
         seeds = _pick(universe.INDEX_SYMBOLS, symbols, "symbol")
-        return self._gather(INDEX, lambda b: b.list_indices(seeds), "指數清單")
+        return self._gather(INDEX, lambda b: b.list_indices(seeds), "指數清單",
+                            broker=broker, markets=markets)
 
     def list_all(self, markets: Iterable[str] = DEFAULT_STOCK_MARKETS) -> dict:
         """一次取得股票、期貨與指數。部分券商失敗時仍返回已取得的資料。"""
@@ -285,7 +317,8 @@ class Brokery:
         本身沒有這個維度；富途與 Tiger 的模擬戶口、富途的已停用戶口因此不列入。
         acc_type 為戶口性質（all/cash/margin），是返回欄位，不傳即全部列回；filter 只在本處做一次，
         各券商只返回自己聲明的 acc_type（見 SymbolBroker.acc_types），要求了不支持的值即明確返回
-        status=False，不會憑空造出戶口。
+        status=False，不會憑空造出戶口。券商原樣透傳、不在詞表內的性質（如 IB 的 individual）只在不過濾時
+        列回，過濾時一律在 message 點名說明（acc_type_other），不會靜默消失。
 
         broker 省略時查所有已啟用的券商，個別券商連線失敗或沒有該類戶口時仍返回已取得的戶口，並在
         message 中逐項說明。currency 指定時金額以該幣種計（Webull 改讀該幣種的明細），省略時以各券商
@@ -315,13 +348,79 @@ class Brokery:
             except Exception as exc:
                 notes.append(f"{adapter.source}: {type(exc).__name__}: {exc}")
 
-        rows = [row for row in rows if acc_type == "all" or row["acc_type"] == acc_type]
-        rows = _dedupe_accounts(rows)
+        kept: list[dict] = []
+        for row in rows:
+            if acc_type == "all" or row["acc_type"] == acc_type:
+                kept.append(row)
+            elif row["acc_type"] not in ACC_FILTERS:
+                # 券商原樣透傳的戶口性質（如 IB 的 AccountType=INDIVIDUAL → individual）不在統一詞表內：
+                # 既不能當它符合篩選，亦不可靜默丟列，否則該券商在結果中無故消失而無從得知原因。
+                notes.append(f"acc_type_other: {row['source']} 的 {row['account_id']} 為 {row['acc_type']}"
+                             f"（非 {'/'.join(ACC_FILTERS[1:])}），未列入")
+        rows = _dedupe_accounts(kept)
         detail = f"{len(rows)} 個戶口（來源 {', '.join(a.source for a in adapters)}）"
         if not rows:
             return _accounts_fail("no_account: " + "；".join(notes or ["沒有符合條件的戶口"]))
-        message = f"ok: {detail}" if not notes else f"ok（{detail}，部分券商未完成）" + "；".join(notes)
+        message = f"ok: {detail}" + ("" if not notes else "；注意：" + "；".join(notes))
         return _accounts_ok(rows, message)
+
+    # ---------- 連線狀態 ----------
+
+    def get_brokers(self, broker: str | None = None) -> dict:
+        """各券商的連線狀態與探測延遲，一律以 brokers.base.BROKER_COLUMNS 為欄位。
+
+        探測用一次戶口查詢：只需連線與鑑權，不需要行情數據權限，因此行情權限缺失、市場休市或
+        某市場沒有歷史數據時，不會被誤報為連線斷開。各家並行探測，每家一律有一行結果：連不上者
+        connected=False、latency_ms 為 NaN（不以任何數字湊出），原因原樣寫入 detail。
+        只要已啟用的券商都取得了結果即 status=True（哪怕全部連不上，「全部斷開」本身即有效答案）；
+        只有無券商可探測或指定了未啟用的券商時才 status=False。
+
+        探測會實際建立連線，故不設快取，也不應定時輪詢；超過 .env 的請求超時仍未返回者記為
+        timeout，本方法不會因此無限等待（該次呼叫仍會在後台跑完，但不影響本次返回）。
+        """
+        if broker is None:
+            adapters = list(self._brokers.values())
+        else:
+            adapter = self._brokers.get(broker)
+            if adapter is None:
+                return _brokers_fail(f"unknown_source: {broker}；已啟用 {', '.join(self._brokers) or '無'}")
+            adapters = [adapter]
+        if not adapters:
+            return _brokers_fail(f"no_source: 未啟用任何券商（可用 {', '.join(BROKERS)}）")
+
+        limit = max(1.0, float(get_settings().request_timeout))
+        # 不用 with：退出時會 join 仍在跑的執行緒，令上面的超時失效。
+        pool = ThreadPoolExecutor(max_workers=len(adapters))
+        try:
+            futures = [pool.submit(self._probe, adapter) for adapter in adapters]
+            rows = []
+            for adapter, future in zip(adapters, futures):
+                try:
+                    rows.append(future.result(timeout=limit))
+                except FutureTimeout:
+                    rows.append({"source": adapter.source, "connected": False, "latency_ms": float("nan"),
+                                 "accounts": 0, "detail": f"timeout: 超過 {limit}s 未返回",
+                                 "checked_at": int(time.time())})
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+        down = [row["source"] for row in rows if not row["connected"]]
+        speed = "，".join(f"{row['source']} {row['latency_ms']:.0f}ms" for row in rows if row["connected"])
+        detail = f"{len(rows)} 個券商（{speed or '無一可連'}）"
+        message = f"ok: 已探測 {detail}" if not down else f"ok（{detail}，未能連接 {'、'.join(down)}）"
+        return _brokers_ok(rows, message)
+
+    def _probe(self, adapter: SymbolBroker) -> dict:
+        """以一次戶口查詢量該券商的往返時間；失敗不拋出，改為 connected=False。"""
+        started = time.perf_counter()
+        try:
+            accounts = adapter.get_accounts(None)
+            latency = (time.perf_counter() - started) * 1000.0
+            return {"source": adapter.source, "connected": True, "latency_ms": latency,
+                    "accounts": len(accounts), "detail": "", "checked_at": int(time.time())}
+        except Exception as exc:
+            return {"source": adapter.source, "connected": False, "latency_ms": float("nan"),
+                    "accounts": 0, "detail": f"{type(exc).__name__}: {exc}", "checked_at": int(time.time())}
 
     # ---------- 離線讀取 ----------
 
@@ -339,22 +438,47 @@ class Brokery:
 
     # ---------- 內部 ----------
 
-    def _gather(self, symbol_type: str, call, label: str) -> dict:
-        providers = [b for b in self._brokers.values() if b.supports(symbol_type)]
-        if not providers:
-            return _fail(f"no_source: 已啟用的券商（{', '.join(self._brokers)}）不提供{label}")
+    def _gather(self, symbol_type: str, call, label: str,
+                broker: str | None = None, markets: Iterable[str] | None = None) -> dict:
+        """向聲明支持該品種的券商取清單。
+
+        broker 指定只向一家取：未啟用即 unknown_source，該家未聲明該品種即 type_unsupported，一律明確
+        報錯而不靜默改用別家。markets 只過濾返回行的 market，用於沒有市場參數的接口（期貨／指數）；
+        股票清單的市場由適配器自己處理，這裡的過濾只是確保返回的確實是所請求的市場。
+        """
+        if broker:
+            adapter = self._brokers.get(broker)
+            if adapter is None:
+                return _fail(f"unknown_source: {broker}；已啟用 {', '.join(self._brokers) or '無'}")
+            if not adapter.supports(symbol_type):
+                return _fail(
+                    f"type_unsupported: {broker} 不提供{label}"
+                    f"（{broker} 只提供 {'/'.join(adapter.capabilities) or '無'}）"
+                )
+            providers = [adapter]
+        else:
+            providers = [b for b in self._brokers.values() if b.supports(symbol_type)]
+            if not providers:
+                return _fail(f"no_source: 已啟用的券商（{', '.join(self._brokers)}）不提供{label}")
 
         rows: list[dict] = []
         errors: list[str] = []
-        for broker in providers:
+        for adapter in providers:
             try:
-                rows.extend(call(broker))
+                rows.extend(call(adapter))
             except Exception as exc:
-                errors.append(f"{broker.source}: {type(exc).__name__}: {exc}")
+                errors.append(f"{adapter.source}: {type(exc).__name__}: {exc}")
 
         rows = dedupe_rows(rows)
         if not rows and errors:
             return _fail(f"{label}取得失敗：" + "；".join(errors))
+        if markets:
+            keep = {str(m).upper() for m in markets}
+            kept = [row for row in rows if row["market"] in keep]
+            if not kept and rows:
+                # 取到了但全部不在指定市場：空表不是成功，必須點名（不以空表冒充）
+                return _fail(f"empty_list: {label}在 {'/'.join(sorted(keep))} 沒有條目")
+            rows = kept
         message = "ok" if not errors else f"ok（{len(rows)} 條，部分券商失敗）" + "；".join(errors)
         return _ok(rows, message)
 
