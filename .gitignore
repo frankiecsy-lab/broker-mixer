@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.idea/
+.SCRATCH/
+.env
+brokery/data/
+*.log
