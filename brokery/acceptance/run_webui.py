@@ -1,5 +1,5 @@
 """驗收 `brokery_webui`：Web UI 只做頁面與轉發，資料一律經 brokery_api 閘道（不連任何券商、不佔用 .env 的
-API_PORT）。以存根閘道提供 /accounts、/capabilities 與三個清單接口，核對：
+API_PORT）。以存根閘道提供 /accounts、/capabilities、三個清單接口與 /codes/meta、/codes/refresh，核對：
 
 * 轉發原樣透傳信封：欄位與順序即 ACCOUNT_COLUMNS／COLUMNS、行與 message 逐字一致，並帶 X-API-Key 請求閘道；
 * /api/symbols 按類型轉到對應的清單接口，并把市場與券商原樣傳為 markets／broker（能力閘在 core，Web UI
@@ -8,7 +8,9 @@ API_PORT）。以存根閘道提供 /accounts、/capabilities 與三個清單接
 * 頁面以 Chromium 載入後內聯腳本無語法錯誤：菜單兩項（戶口清單、標的列表）；戶口頁進入即取一次，欄位
   與順序即 ACCOUNT_COLUMNS、第一欄為來源、資金欄為千分位兩位小數、缺失值顯示破折號、按來源統計戶口數；
   標的頁的券商選項由 /capabilities 填充且默認 futu（不提供該品種者標註且不可選）、市場選項只由返回的
-  market 填充、下方表格欄位即 COLUMNS、轉類型會重設為全部市場、向對應接口再取一次，選項再由新品种重建。
+  market 填充、下方表格欄位即 COLUMNS、轉類型會重設為全部市場、向對應接口再取一次，選項再由新品种重建；
+  標的頁另列一列顯示離線 CODES 快照的行數與距今時間（轉發 /codes/meta，離線讀回，不需券商連線，故與
+  即時取數的統計分開），「更新離線 CODES」轉發 /codes/refresh 且不带市場參數（快照即全量）。
 
 需要 Chromium（`pip install playwright` 後 `playwright install chromium`）；未安裝時跳過並返回成功。
 
@@ -29,6 +31,7 @@ import uvicorn
 from fastapi.testclient import TestClient
 
 from brokery.brokers.base import ACCOUNT_COLUMNS, COLUMNS
+from brokery.core import CODES_META_COLUMNS
 from brokery_webui.app import create_app
 
 KEY = "gui-acceptance-key-4f2a"
@@ -43,22 +46,34 @@ ACCOUNT_ROWS = [
 
 
 # 標的清單的存根返回：兩行、兩個市場，足以核對欄位契約與「市場選項只由返回的 market 填充」。
+# 行必須嚴格對應 COLUMNS：不設到期月欄，券商原生標識只在 raw 的原生格式中出現；symbol_type
+# 與真實閘道一致為大寫常量。
 SYMBOL_ROWS = [
-    ["HK.00700", "騰訊控股", "HK", "700", "stock", "HKD", "HKEX", "", "futu", "700"],
-    ["US.NVDA", "英偉達", "US", "NVDA", "stock", "USD", "NASDAQ", "", "futu", "NVDA"],
+    ["HK.00700", "騰訊控股", "HK", "700", "STOCK", "HKD", "HKEX", "futu"],
+    ["US.NVDA", "英偉達", "US", "NVDA", "STOCK", "USD", "NASDAQ", "futu"],
 ]
 # 能力聲明：ib 不提供股票 → 頁面上該選項應標註且不可選（由適配器聲明，不在頁面硬寫）。
+# 值必須與真實閘道一致（symbol_type 的大寫常量），否則會掩蓋頁面以類型值直接比對能力聲明的錯誤。
 CAPABILITIES = {
     "sources": ["futu", "ib"],
     "adapters": {
-        "futu": {"capabilities": ["stock", "future", "index"]},
-        "ib": {"capabilities": ["future", "index"]},
+        "futu": {"capabilities": ["STOCK", "FUTURE", "INDEX"]},
+        "ib": {"capabilities": ["FUTURE", "INDEX"]},
     },
 }
+# 離線 CODES 快照的元資料：一行，欄位與順序即 CODES_META_COLUMNS。刻意給一筆超過 24 小時且上次更新失敗
+# 的快照（距今 90000 秒 → 頁面顯示「1 天前」），因為要驗的正是「過舊以警告色提示、並說明上次更新失敗」。
+CODES_META_ROWS = [["futu_codes", 38569, 8, "2026-10-10T10:00:00+00:00", 90000.0, True, "futu",
+                   "HK/US 全量 CODES", "futu: OpenD 未連接"]]
+CODES_META = {"status": True, "data": {"columns": list(CODES_META_COLUMNS), "rows": CODES_META_ROWS},
+              "message": "ok"}
+CODES_REFRESH = {"status": True, "data": {"columns": list(CODES_META_COLUMNS), "rows": CODES_META_ROWS},
+                 "message": "ok: 已更新 38569 條 CODES（FUTURE 14079（+0），INDEX 740（+0），STOCK 23750（+0））"}
 
 
 class Stub(BaseHTTPRequestHandler):
-    """存根閘道：只提供戶口、能力與三個清單接口，並記錄收到的金鑰與完整路徑，足以核對轉發口徑。"""
+    """存根閘道：只提供戶口、能力、三個清單接口與離線 CODES 的兩個接口，並記錄收到的金鑰與完整路徑，
+    足以核對轉發口徑。"""
 
     hits: list[str] = []
     keys: list[str] = []
@@ -82,6 +97,10 @@ class Stub(BaseHTTPRequestHandler):
         elif self.path.split("?")[0] == "/accounts":
             body, code = {"status": True, "data": {"columns": ACCOUNT_COLUMNS, "rows": ACCOUNT_ROWS},
                           "message": MESSAGE}, 200
+        elif self.path.split("?")[0] == "/codes/meta":
+            body, code = CODES_META, 200
+        elif self.path.split("?")[0] == "/codes/refresh":
+            body, code = CODES_REFRESH, 200
         else:
             body, code = {"detail": f"no such path: {self.path}"}, 404
         raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -147,6 +166,19 @@ def main() -> dict:
     check("能力聲明轉發（券商選項由此填充，不在 Web UI 硬寫）",
           caps.get("status") is True and caps["data"]["sources"] == ["futu", "ib"],
           str(caps["data"].get("sources")))
+
+    # 離線快照的兩個接口：元資料離線讀回、重拉需券商連線，兩者均必須原樣透傳，Web UI 不自行解讀。
+    Stub.queries.clear()
+    codes_meta = client.get("/api/codes/meta").json()
+    check("離線 CODES 元資料轉發 /codes/meta（欄位即 CODES_META_COLUMNS）",
+          Stub.queries == ["/codes/meta"] and codes_meta.get("status") is True
+          and codes_meta["data"]["columns"] == list(CODES_META_COLUMNS)
+          and codes_meta["data"]["rows"] == CODES_META_ROWS, ",".join(Stub.queries))
+    Stub.queries.clear()
+    codes_refresh = client.get("/api/codes/refresh").json()
+    check("更新離線 CODES 轉發 /codes/refresh 且不带市場參數（快照即全量，只拉部分市場會被縮細防護拒絕）",
+          Stub.queries == ["/codes/refresh"] and codes_refresh.get("status") is True
+          and codes_refresh["message"] == CODES_REFRESH["message"], ",".join(Stub.queries))
     for kind, path in (("future", "/futures"), ("index", "/indices")):
         Stub.queries.clear()
         client.get("/api/symbols", params={"kind": kind}).json()
@@ -215,6 +247,12 @@ def main() -> dict:
             market_opts = page.eval_on_selector_all("#s-market option", "els => els.map(e => e.value)")
             sym_head = page.eval_on_selector_all("#s-table th", "els => els.map(e => e.textContent)")
             sym_chips = page.eval_on_selector_all("#s-sources .chip", "els => els.map(e => e.textContent)")
+            snapshot_line = page.eval_on_selector("#s-snapshot", "e => e.className + '|' + e.textContent")
+            Stub.queries.clear()
+            page.click("#s-codes-refresh")
+            page.wait_for_timeout(1200)
+            codes_query = list(Stub.queries)
+            refresh_msg = page.eval_on_selector("#s-msg", "e => e.className + '|' + e.textContent")
             Stub.queries.clear()
             page.select_option("#s-market", "HK")
             page.wait_for_timeout(800)
@@ -247,7 +285,17 @@ def main() -> dict:
     check("狀態列顯示已連接閘道", status == "已連接閘道", status)
     check("「重新整理」會再取一次", refreshed == ["/accounts"], ",".join(refreshed))
 
-    check("進入標的頁先取能力聲明再取清單", sym_hits == ["/capabilities", "/stocks"], ",".join(sym_hits))
+    # 快照狀態與清單無關（離線讀回，不需券商連線），故兩者在進入該頁時同時送出，順序不作要求。
+    check("進入標的頁先取能力聲明再取清單",
+          [h for h in sym_hits if h != "/codes/meta"] == ["/capabilities", "/stocks"], ",".join(sym_hits))
+    check("進入標的頁同時讀離線快照狀態（不需券商連線）", "/codes/meta" in sym_hits, ",".join(sym_hits))
+    check("快照一行顯示行數與距今時間，過舊及上次更新失敗以警告色提示",
+          "msg warn" in snapshot_line and "38569 條" in snapshot_line and "1 天前" in snapshot_line
+          and "上次更新失敗" in snapshot_line, snapshot_line)
+    check("「更新離線 CODES」只向 /codes/refresh 送出（不带市場參數），完成後重讀快照狀態",
+          codes_query[:1] == ["/codes/refresh"] and all("?" not in q for q in codes_query)
+          and "/codes/meta" in codes_query, ",".join(codes_query))
+    check("更新的結果原樣顯示（含各品種增減）", "已更新 38569 條 CODES" in refresh_msg, refresh_msg)
     check("券商選項由能力聲明填充，默認 futu", broker_value == "futu"
           and broker_opts == ["futu|futu|可選", "ib|ib（不提供股票）|不可選"], ",".join(broker_opts))
     check("下方表格欄位即 COLUMNS", sym_head == COLUMNS, ",".join(sym_head[:3]))
@@ -268,7 +316,8 @@ def main() -> dict:
         return {"status": False, "data": None, "message": "失敗：" + "；".join(failed)}
     return {"status": True, "data": None,
             "message": f"{len(checks)} 項檢查全過：菜單兩項、轉發原樣透傳信封、類型與市場/券商正確轉傳、"
-                       "金鑰不正確與閘道不可達均明確報錯、戶口與標的表格及來源統計正常"}
+                       "金鑰不正確與閘道不可達均明確報錯、戶口與標的表格及來源統計正常、"
+                       "離線 CODES 快照年齡與更新按鈕轉發正常"}
 
 
 if __name__ == "__main__":

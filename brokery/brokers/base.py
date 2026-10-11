@@ -2,6 +2,9 @@
 
 各券商的返回在此統一為同一組欄位，且 code 一律為統一代碼（見 codes 模組）。新增券商
 時只需實作本介面並聲明自身能力，不得改動欄位語義。
+
+每個取數方法都帶 keyword-only 的 raw 參數：raw=True 時返回該券商原生的欄位與格式（字典的鍵即
+上游自己的欄位名，值不做換算或歸類），取數範圍則與 raw=False 相同。欄位契約只約束 raw=False。
 """
 from __future__ import annotations
 
@@ -14,7 +17,8 @@ from zoneinfo import ZoneInfo
 
 from ..codes import FUTURE, INDEX, STOCK, is_secondary_exchange
 
-# 統一輸出欄位。code 為統一代碼；raw_code 保留券商原生標識以便回溯核對。欄位與順序對所有券商
+# 統一輸出欄位。code 為統一代碼；期貨的到期月已含在 symbol 內（如 US.ES202612、SG.CNmain），故不
+# 另設到期月欄；券商原生標識屬 raw=True 的原生格式，統一格式不重複承載。欄位與順序對所有券商
 # 一律相同；該券商沒有這個概念者一律留空字串（例如 Tiger 的股票清單唔附帶 exchange），嚴禁為
 # 湊齊欄位而造數。
 COLUMNS = [
@@ -25,9 +29,7 @@ COLUMNS = [
     "symbol_type",
     "currency",
     "exchange",
-    "expiry",
     "source",
-    "raw_code",
 ]
 
 # 統一 K 線欄位（格式以富途為準）。ts 為 UTC 秒，是跨券商對齊鍵（週/月 bar 一律歸到所屬週期
@@ -301,6 +303,48 @@ class BarMerger:
         return [self._rows[ts] for ts in sorted(self._rows)]
 
 
+def _bar_sort_key(value) -> tuple:
+    """原生時間欄位可能是 epoch 數或時間文字，兩者不可直接比較，故數字與文字各自成組排序。"""
+    if isinstance(value, (int, float)):
+        return (0, float(value), "")
+    return (1, 0.0, str(value))
+
+
+class NativeBars:
+    """按券商原生的時間欄位合併推送的 bar，只保留最近 count 根。
+
+    對外語義與 BarMerger 一致（只在最新一根有變化時回呼，且每次送不超過 count 根的完整結果），
+    差別只在欄位與值一律為上游原樣：不做時間換算，亦不按統一週期歸併。時間欄位的名稱由各券商
+    聲明（富途 time_key、Tiger time、Webull time、IB date）。
+    """
+
+    def __init__(self, count: int, time_field: str):
+        self._count = count
+        self._time_field = time_field
+        self._rows: dict[object, dict] = {}
+        self._signature: tuple | None = None
+
+    def merge(self, rows: Iterable[dict]) -> bool:
+        """合併新到的 bar，返回最新一根是否新出現或有變化。"""
+        for row in rows:
+            self._rows[row.get(self._time_field)] = row
+        if len(self._rows) > self._count:
+            for key in sorted(self._rows, key=_bar_sort_key)[: -self._count]:
+                del self._rows[key]
+        if not self._rows:
+            return False
+        newest = self._rows[max(self._rows, key=_bar_sort_key)]
+        signature = tuple(str(value) for value in newest.values())
+        if signature == self._signature:
+            return False
+        self._signature = signature
+        return True
+
+    def frame(self) -> list[dict]:
+        """目前這一段 bar（按原生時間升序）。"""
+        return [self._rows[key] for key in sorted(self._rows, key=_bar_sort_key)]
+
+
 def stream_wait(seconds: float) -> None:
     """串流期間的等待：seconds 為 0 時直到 Ctrl-C。
 
@@ -352,19 +396,19 @@ class SymbolBroker(ABC):
     def supports_kline(self, symbol_type: str) -> bool:
         return symbol_type in self.kline_symbol_types
 
-    def list_stocks(self, markets: Iterable[str]) -> list[dict]:
+    def list_stocks(self, markets: Iterable[str], *, raw: bool = False) -> list[dict]:
         raise NotImplementedError(f"{self.source} 不提供股票清單")
 
-    def list_futures(self, seeds: Iterable) -> list[dict]:
+    def list_futures(self, seeds: Iterable, *, raw: bool = False) -> list[dict]:
         raise NotImplementedError(f"{self.source} 不提供期貨清單")
 
-    def list_indices(self, seeds: Iterable) -> list[dict]:
+    def list_indices(self, seeds: Iterable, *, raw: bool = False) -> list[dict]:
         raise NotImplementedError(f"{self.source} 不提供指數清單")
 
     def to_contract(self, code: str) -> dict:
         raise NotImplementedError(f"{self.source} 不提供代碼轉換")
 
-    def get_kline(self, code: str, ktype: str, count: int, autype: str) -> list[dict]:
+    def get_kline(self, code: str, ktype: str, count: int, autype: str, *, raw: bool = False) -> list[dict]:
         """取 K 線。count 為 bar 數（以富途語義為準），各適配器自行換算成自身的時間參數。"""
         raise NotImplementedError(f"{self.source} 不提供 K 線")
 
@@ -376,16 +420,19 @@ class SymbolBroker(ABC):
         autype: str,
         seconds: float,
         on_update,
+        *,
+        raw: bool = False,
     ) -> dict[str, list[dict]]:
         """串流多個代碼的最新 K 線，全部共用同一條連線（對應多張圖同時顯示）。
 
         先以歷史 bar 作起點，之後最新一根每次出現或變化即呼叫 on_update(code, rows)，rows 為該
         代碼按 ts 升序、不超過 count 根的完整結果。seconds 為持續秒數（0 表示直到 Ctrl-C）。
-        返回各代碼最終的 bar 列表。
+        返回各代碼最終的 bar 列表。raw=True 時 rows 為該券商原生的欄位與格式，但合併與回呼的
+        語義不變（仍為按原生時間升序、不超過 count 根的完整結果）。
         """
         raise NotImplementedError(f"{self.source} 不提供 K 線串流")
 
-    def get_accounts(self, currency: str | None = None) -> list[dict]:
+    def get_accounts(self, currency: str | None = None, *, raw: bool = False) -> list[dict]:
         """取該券商的戶口清單與資金。只返回真實且已啟用的戶口；currency 為指定幣種，
         不指定時以券商原生匯總幣種為準。"""
         raise NotImplementedError(f"{self.source} 不提供戶口資料")
@@ -399,8 +446,6 @@ class SymbolBroker(ABC):
         symbol_type: str,
         currency: str,
         exchange: str,
-        expiry: str,
-        raw_code: str,
     ) -> dict:
         """依統一欄位順序構造一列，避免各適配器各自拼字典。"""
         return {
@@ -411,17 +456,35 @@ class SymbolBroker(ABC):
             "symbol_type": symbol_type,
             "currency": currency,
             "exchange": exchange,
-            "expiry": expiry,
             "source": self.source,
-            "raw_code": raw_code,
         }
 
 
+def native_columns(rows: list[dict]) -> list[str]:
+    """原生欄位順序：按各列鍵出現的先後合併。
+
+    字典保持插入順序，而各列的鍵順序由適配器代碼決定，故同一份數據的重複呼叫必得同一順序
+    （欄位順序不受該列有否缺值影響）。
+    """
+    columns: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row:
+            if key not in seen:
+                seen.add(key)
+                columns.append(key)
+    return columns
+
+
 def dedupe_rows(rows: list[dict]) -> list[dict]:
-    """同一合約在多處掛牌時只保留一列，主場優先於次要場所。"""
+    """同一合約在多處掛牌時只保留一列，主場優先於次要場所。
+
+    合約身份即統一代碼（market + symbol）；期貨的到期月已含在 symbol 內，故不同到期月的合約不會
+    被合併為一列。
+    """
     best: dict[tuple, dict] = {}
     for row in rows:
-        key = (row["market"], row["symbol_type"], row["symbol"], row["expiry"])
+        key = (row["market"], row["symbol_type"], row["symbol"])
         current = best.get(key)
         if current is None or (is_secondary_exchange(current["exchange"]) and not is_secondary_exchange(row["exchange"])):
             best[key] = row

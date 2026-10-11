@@ -9,6 +9,12 @@ brokers.base.ACCOUNT_COLUMNS（戶口）或 brokers.base.BROKER_COLUMNS（連線
 富途按（市場, 證券類型）一次取全；IB 依種子展開所有到期月與交易所，並負責代碼轉換。某類
 標的若無券商可提供，會明確返回失敗而不是空表，避免把「取不到」誤當「不存在」。只做 K 線的
 券商（如 Tiger）不聲明清單能力，因此在清單流程中被跳過，在 K 線流程中仍可用。
+
+連券商的取數方法一律有 keyword-only 的 raw 參數：raw=True 時 data 即該券商原生的 DataFrame
+（欄位與格式為上游自帶的鍵，見 brokers.base.native_columns），不做任何映射、改名或換算；返回
+信封仍只有 status/data/message 三個鍵。raw 只改欄位與格式，不改取數範圍：同一批市場與種子、
+同樣的真實戶口篩選與 bar 數。因此按統一欄位名進行的後處理（去重、market/acc_type 逐行過濾）
+在 raw 下一律跳過，而其中表達取數範圍的部分改在別處保證（期貨與指數的市場按種子篩選）。
 """
 from __future__ import annotations
 
@@ -29,6 +35,7 @@ from .brokers.base import (
     K_COLUMNS,
     SymbolBroker,
     dedupe_rows,
+    native_columns,
 )
 from .brokers.futu_broker import FutuBroker
 from .brokers.ib_broker import IbBroker
@@ -44,6 +51,17 @@ DEFAULT_SOURCES = ("futu", "ib", "tiger", "webull")
 # 預設只取港美兩市：全市場（含滬深日馬澳新加）動輒數萬條，需時自行傳入 markets。
 DEFAULT_STOCK_MARKETS = ("HK", "US")
 
+# 離線快照的唯一來源券商：其他券商的標識体系不同（IB 以 conId/ISIN），混進去只會污染同一份代碼表。
+CODES_SOURCE = "futu"
+
+# 離線快照的元資料欄位：供介面顯示快照年齡與是否需要更新（見 get_code_meta）。
+CODES_META_COLUMNS = ("name", "rows", "columns_count", "saved_at", "age_seconds", "stale",
+                      "source", "note", "last_refresh_error")
+
+# 新快照中某品種的行數少於既有快照的此比例（或整個品種消失）時拒絕覆蓋。list_all 容許部分
+# 失敗，某品種取不到就會靜靜雞少返成千條（例如指數因行情權限失敗），故寧可保留舊快照並明確回報。
+CODES_MIN_KEEP_RATIO = 0.9
+
 # 戶口性質篩選的取值（all 為不篩選）。戶口環境不再區分：各券商一律只返回真實戶口。
 ACC_FILTERS = ("all", ACC_CASH, ACC_MARGIN)
 
@@ -53,20 +71,89 @@ def _frame(rows: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=COLUMNS)
 
 
-def _ok(rows: list[dict], message: str = "ok") -> dict:
-    return {"status": True, "data": _frame(rows), "message": message}
+def _native_frame(rows: list[dict]) -> pd.DataFrame:
+    """以各券商自帶的鍵構造 DataFrame（raw=True）。
+
+    取不到資料時沒有原生欄位可保留，故失敗的信封為無欄位的空表，不憑空造出欄位名。
+    """
+    return pd.DataFrame(rows, columns=native_columns(rows))
 
 
-def _fail(message: str) -> dict:
-    return {"status": False, "data": _frame([]), "message": message}
+def _ok(rows: list[dict], message: str = "ok", raw: bool = False) -> dict:
+    return {"status": True, "data": _native_frame(rows) if raw else _frame(rows),
+            "message": message}
 
 
-def _accounts_ok(rows: list[dict], message: str) -> dict:
-    return {"status": True, "data": pd.DataFrame(rows, columns=ACCOUNT_COLUMNS), "message": message}
+def _fail(message: str, raw: bool = False) -> dict:
+    return {"status": False, "data": _native_frame([]) if raw else _frame([]), "message": message}
 
 
-def _accounts_fail(message: str) -> dict:
-    return {"status": False, "data": pd.DataFrame([], columns=ACCOUNT_COLUMNS), "message": message}
+def codes_max_age_seconds() -> float:
+    """快照可視為新鮮的最長秒數（.env 的 CODES_MAX_AGE_HOURS；0 或負數即不做自動更新）。"""
+    return max(0.0, float(get_settings().codes_max_age_hours)) * 3600.0
+
+
+def _type_counts(frame: pd.DataFrame) -> dict:
+    """按 symbol_type 統計行數；無該欄位時返回空字典。"""
+    if "symbol_type" not in frame.columns:
+        return {}
+    return {str(kind): int(n) for kind, n in frame["symbol_type"].value_counts().items()}
+
+
+def _codes_diff(previous: pd.DataFrame, fresh: pd.DataFrame) -> str:
+    """按品種比較新舊快照的行數變化，供更新回報（例如 STOCK 23750（+12））。"""
+    before, after = _type_counts(previous), _type_counts(fresh)
+    parts = [
+        f"{kind} {after.get(kind, 0)}（{after.get(kind, 0) - before.get(kind, 0):+d}）"
+        for kind in sorted(set(before) | set(after))
+    ]
+    return "，".join(parts) or "無先前快照"
+
+
+def _codes_carry_over(previous: pd.DataFrame, fresh: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    """某品種本次完全取不到時，沿用舊快照該品種的行，並返回合併結果與說明。
+
+    只靠縮細防護的話，一個長期的權限問題（如指數）會令快照永遠更新唔到；沿用舊的一類，
+    其餘品種照常更新，缺的那類在回報與 meta 中寫明，不冒充是本次取到的。
+    """
+    if previous.empty or "symbol_type" not in previous.columns or "symbol_type" not in fresh.columns:
+        return fresh, ""
+    before, after = _type_counts(previous), _type_counts(fresh)
+    missing = sorted(kind for kind, count in before.items() if count and after.get(kind, 0) == 0)
+    if not missing:
+        return fresh, ""
+    carried = previous[previous["symbol_type"].isin(missing)]
+    note = "，".join(
+        f"{kind} 本次取不到，沿用舊快照 {int((carried['symbol_type'] == kind).sum())} 條"
+        for kind in missing
+    )
+    return pd.concat([fresh, carried], ignore_index=True), note
+
+
+def _codes_shrink(previous: pd.DataFrame, fresh: pd.DataFrame) -> str:
+    """新快照較既有快照明顯縮細時返回原因，否則返回空字串。
+
+    逐品種比較而非只計總行數：指數只佔全量約 2%，只看總數的話整個品種消失（例如指數因
+    行情權限取不到）也會被掩蓋，快照靜靜雞缺了一類標的。
+    """
+    before, after = _type_counts(previous), _type_counts(fresh)
+    for kind in sorted(before):
+        now = after.get(kind, 0)
+        if now == 0:
+            return f"{kind} 由 {before[kind]} 條變為 0 條"
+        if now < before[kind] * CODES_MIN_KEEP_RATIO:
+            return f"{kind} 由 {before[kind]} 條變為 {now} 條（少於 {CODES_MIN_KEEP_RATIO:.0%}）"
+    return ""
+
+
+def _accounts_ok(rows: list[dict], message: str, raw: bool = False) -> dict:
+    data = _native_frame(rows) if raw else pd.DataFrame(rows, columns=ACCOUNT_COLUMNS)
+    return {"status": True, "data": data, "message": message}
+
+
+def _accounts_fail(message: str, raw: bool = False) -> dict:
+    data = _native_frame([]) if raw else pd.DataFrame([], columns=ACCOUNT_COLUMNS)
+    return {"status": False, "data": data, "message": message}
 
 
 def _brokers_frame(rows: list[dict]) -> pd.DataFrame:
@@ -118,40 +205,55 @@ class Brokery:
 
     # ---------- 清單 ----------
 
-    def list_stocks(self, markets: Iterable[str] | None = None, broker: str | None = None) -> dict:
+    def list_stocks(self, markets: Iterable[str] | None = None, broker: str | None = None, *,
+                    raw: bool = False) -> dict:
         """股票清單。markets 為統一市場前綴（如 HK、US、SH），省略即用 DEFAULT_STOCK_MARKETS；
         broker 指定只向該券商取（未啟用即 unknown_source，不提供該品種即 type_unsupported，
-        一律明確報錯，不會靜靜改用別家湊數）。"""
+        一律明確報錯，不會靜靜改用別家湊數）。raw=True 時 data 為各券商的原生欄位，取數範圍不變。"""
         wanted = tuple(m.upper() for m in markets) if markets else DEFAULT_STOCK_MARKETS
-        return self._gather(STOCK, lambda b: b.list_stocks(wanted), "股票清單",
-                            broker=broker, markets=wanted)
+        return self._gather(STOCK, lambda b: b.list_stocks(wanted, raw=raw), "股票清單",
+                            broker=broker, markets=wanted, raw=raw)
 
     def list_futures(self, roots: Iterable[str] | None = None,
-                     markets: Iterable[str] | None = None, broker: str | None = None) -> dict:
-        """期貨清單：含主連（code 帶 main 後綴）與所有到期月（expiry 欄）。
+                     markets: Iterable[str] | None = None, broker: str | None = None, *,
+                     raw: bool = False) -> dict:
+        """期貨清單：含主連（code 帶 main 後綴）與所有到期月（code 帶到期月，如 US.ES202612）。
 
-        期貨接口沒有市場參數，故 markets（統一市場前綴）由本層按返回行的 market 過濾。
+        期貨接口沒有市場參數，故 markets（統一市場前綴）由本層按返回行的 market 過濾；raw=True 時
+        返回行沒有 market 欄位，同一個取數範圍改由篩選種子保證。
         """
         seeds = _pick(universe.FUTURE_ROOTS, roots, "root")
-        return self._gather(FUTURE, lambda b: b.list_futures(seeds), "期貨清單",
-                            broker=broker, markets=markets)
+        if raw:
+            seeds = _seeds_in_market(seeds, markets)
+        return self._gather(FUTURE, lambda b: b.list_futures(seeds, raw=raw), "期貨清單",
+                            broker=broker, markets=markets, raw=raw)
 
     def list_indices(self, symbols: Iterable[str] | None = None,
-                     markets: Iterable[str] | None = None, broker: str | None = None) -> dict:
-        """指數清單。markets 的處理同期貨清單（按返回行的 market 過濾）。"""
+                     markets: Iterable[str] | None = None, broker: str | None = None, *,
+                     raw: bool = False) -> dict:
+        """指數清單。markets 的處理同期貨清單（按返回行的 market 過濾，raw=True 時按種子篩選）。"""
         seeds = _pick(universe.INDEX_SYMBOLS, symbols, "symbol")
-        return self._gather(INDEX, lambda b: b.list_indices(seeds), "指數清單",
-                            broker=broker, markets=markets)
+        if raw:
+            seeds = _seeds_in_market(seeds, markets)
+        return self._gather(INDEX, lambda b: b.list_indices(seeds, raw=raw), "指數清單",
+                            broker=broker, markets=markets, raw=raw)
 
-    def list_all(self, markets: Iterable[str] = DEFAULT_STOCK_MARKETS) -> dict:
-        """一次取得股票、期貨與指數。部分券商失敗時仍返回已取得的資料。"""
-        results = [self.list_stocks(markets), self.list_futures(), self.list_indices()]
+    def list_all(self, markets: Iterable[str] = DEFAULT_STOCK_MARKETS, *,
+                 broker: str | None = None, raw: bool = False) -> dict:
+        """一次取得股票、期貨與指數。部分券商失敗時仍返回已取得的資料。
+
+        broker 只向該券商取（省略時用所有已啟用的券商）。
+        raw=True 時各類的原生行直接串接，不按統一欄位去重（原生行沒有 code 可作鍵）。
+        """
+        results = [self.list_stocks(markets, broker=broker, raw=raw),
+                   self.list_futures(broker=broker, raw=raw),
+                   self.list_indices(broker=broker, raw=raw)]
         rows = [row for res in results for row in res["data"].to_dict("records")]
         failed = [res["message"] for res in results if not res["status"]]
         if len(failed) == len(results):
-            return _fail("；".join(failed))
+            return _fail("；".join(failed), raw=raw)
         message = "ok" if not failed else "ok（部分失敗）" + "；".join(failed)
-        return _ok(dedupe_rows(rows), message)
+        return _ok(rows if raw else dedupe_rows(rows), message, raw=raw)
 
     # ---------- 代碼轉換 ----------
 
@@ -177,8 +279,6 @@ class Brokery:
             symbol_type=info["symbol_type"],
             currency=contract.currency or "",
             exchange=contract.exchange or "",
-            expiry=contract.lastTradeDateOrContractMonth or "",
-            raw_code=info["raw_code"],
         )
         return _ok([row], f"ok: {info['code']} → {info['raw_code']}")
 
@@ -205,6 +305,8 @@ class Brokery:
         count: int = 60,
         broker: str = "futu",
         autype: str | None = None,
+        *,
+        raw: bool = False,
     ) -> dict:
         """取 K 線，統一以富途格式輸出（欄位固定為 brokers.base.K_COLUMNS）。
 
@@ -213,31 +315,37 @@ class Brokery:
         要求了不支持的模式即返回 status=False，不會靜靜改用另一種價格。品種（股票／期貨／指數／期權）
         由代碼推斷，來源未聲明該品種亦返回 status=False（type_unsupported）。複權只對股票有效：期貨、
         指數與期權沒有公司行動，實測各來源的 qfq 與 none 逐根完全相同，傳哪一種都不影響價格。
+
+        raw=True 時 data 為該券商 bar 的原生欄位與格式（富途 time_key、Tiger/Webull 的 time、IB 的
+        date），複權模式與 bar 數的處理不變。
         """
         adapter = self._brokers.get(broker)
         if adapter is None:
-            return _fail(f"unknown_source: {broker}；已啟用 {', '.join(self._brokers) or '無'}")
+            return _fail(f"unknown_source: {broker}；已啟用 {', '.join(self._brokers) or '無'}", raw=raw)
         if count < 1:
-            return _fail(f"bad_count: {count}，bar 數須為正整數")
+            return _fail(f"bad_count: {count}，bar 數須為正整數", raw=raw)
         autype = self.autype if autype is None else autype
         if autype not in adapter.autypes:
             return _fail(
                 f"autype_unsupported: {broker} 不支援複權 {autype}"
                 f"（{broker} 只支援 {'/'.join(adapter.autypes) or '無'}）；"
-                f"取原始成交價請用 autype=\"none\""
+                f"取原始成交價請用 autype=\"none\"",
+                raw=raw,
             )
         try:
             self._check_kline_type(adapter, code)
-            rows = adapter.get_kline(code, ktype, count, autype)
+            rows = adapter.get_kline(code, ktype, count, autype, raw=raw)
         except ValueError as exc:  # CodeError 與時間換算錯誤均屬輸入問題
-            return _fail(str(exc))
+            return _fail(str(exc), raw=raw)
         except Exception as exc:
-            return _fail(f"kline_failed: {type(exc).__name__}: {exc}")
+            return _fail(f"kline_failed: {type(exc).__name__}: {exc}", raw=raw)
         if not rows:
-            return _fail(f"empty_kline: {code} 未取到任何 bar（請檢查代碼、ktype 或券商權限）")
+            return _fail(
+                f"empty_kline: {code} 未取到任何 bar（請檢查代碼、ktype 或券商權限）", raw=raw,
+            )
         return {
             "status": True,
-            "data": pd.DataFrame(rows, columns=K_COLUMNS),
+            "data": _native_frame(rows) if raw else pd.DataFrame(rows, columns=K_COLUMNS),
             "message": f"ok: {len(rows)} 根 {ktype} K 線（{code}，來源 {broker}）",
         }
 
@@ -250,6 +358,8 @@ class Brokery:
         autype: str | None = None,
         seconds: float = 60,
         on_update=None,
+        *,
+        raw: bool = False,
     ) -> dict:
         """串流最新 K 線：先返回歷史 bar，之後最新一根每次變化即回呼 on_update(code, rows)。
 
@@ -260,43 +370,52 @@ class Brokery:
         seconds 為持續秒數，0 表示直到 Ctrl-C（按 Ctrl-C 屬正常結束）。返回的 data 為各代碼最終的
         bar 合併結果。串流的支援範圍由券商另行聲明（stream_ktypes/stream_autypes）：IB 的推送只能
         用 autype="none"，不支持時在開始前就明確返回 status=False。
+
+        raw=True 時起點與 on_update 的 rows 一律為原生欄位（見各券商的 NativeBars），回呼的觸發條件
+        與 bar 數不變；返回的 data 不按 code/ts 排序（原生行沒有該兩欄），順序即各代碼的到達順序。
         """
         adapter = self._brokers.get(broker)
         if adapter is None:
-            return _fail(f"unknown_source: {broker}；已啟用 {', '.join(self._brokers) or '無'}")
+            return _fail(f"unknown_source: {broker}；已啟用 {', '.join(self._brokers) or '無'}", raw=raw)
         wanted = (codes,) if isinstance(codes, str) else tuple(codes)
         if not wanted:
-            return _fail("bad_codes: 至少需要一個代碼")
+            return _fail("bad_codes: 至少需要一個代碼", raw=raw)
         if count < 1:
-            return _fail(f"bad_count: {count}，bar 數須為正整數")
+            return _fail(f"bad_count: {count}，bar 數須為正整數", raw=raw)
         if ktype not in adapter.stream_ktypes:
             return _fail(
                 f"ktype_unsupported: {broker} 不支持串流 {ktype}"
-                f"（可串流 {'/'.join(adapter.stream_ktypes) or '無'}）"
+                f"（可串流 {'/'.join(adapter.stream_ktypes) or '無'}）",
+                raw=raw,
             )
         autype = self.autype if autype is None else autype
         if autype not in adapter.stream_autypes:
             return _fail(
                 f"autype_unsupported: {broker} 的 K 線串流不支援複權 {autype}"
                 f"（{broker} 串流只支援 {'/'.join(adapter.stream_autypes) or '無'}）；"
-                '串流請用 autype="none"'
+                '串流請用 autype="none"',
+                raw=raw,
             )
         try:
             for code in wanted:
                 self._check_kline_type(adapter, code)
-            frames = adapter.stream_kline(wanted, ktype, count, autype, seconds, on_update)
+            frames = adapter.stream_kline(wanted, ktype, count, autype, seconds, on_update, raw=raw)
         except ValueError as exc:  # CodeError 與時間換算錯誤均屬輸入問題
-            return _fail(str(exc))
+            return _fail(str(exc), raw=raw)
         except Exception as exc:
-            return _fail(f"stream_failed: {type(exc).__name__}: {exc}")
+            return _fail(f"stream_failed: {type(exc).__name__}: {exc}", raw=raw)
 
         rows = [row for bars in frames.values() for row in bars]
         if not rows:
-            return _fail(f"empty_kline: {', '.join(wanted)} 未取到任何 bar（請檢查代碼、ktype 或券商權限）")
-        rows.sort(key=lambda row: (row["code"], row["ts"]))
+            return _fail(
+                f"empty_kline: {', '.join(wanted)} 未取到任何 bar（請檢查代碼、ktype 或券商權限）",
+                raw=raw,
+            )
+        if not raw:
+            rows.sort(key=lambda row: (row["code"], row["ts"]))
         return {
             "status": True,
-            "data": pd.DataFrame(rows, columns=K_COLUMNS),
+            "data": _native_frame(rows) if raw else pd.DataFrame(rows, columns=K_COLUMNS),
             "message": (
                 f"ok: 串流結束，{len(frames)} 個代碼共 {len(rows)} 根 {ktype} K 線"
                 f"（來源 {broker}，{seconds} 秒）"
@@ -310,6 +429,8 @@ class Brokery:
         broker: str | None = None,
         acc_type: str = "all",
         currency: str | None = None,
+        *,
+        raw: bool = False,
     ) -> dict:
         """戶口清單與資金，四家一律以 brokers.base.ACCOUNT_COLUMNS 為欄位。
 
@@ -323,15 +444,26 @@ class Brokery:
         broker 省略時查所有已啟用的券商，個別券商連線失敗或沒有該類戶口時仍返回已取得的戶口，並在
         message 中逐項說明。currency 指定時金額以該幣種計（Webull 改讀該幣種的明細），省略時以各券商
         原生匯總幣種為準，一律不做匯率換算；該券商沒有對應欄位者為 NaN（如 Webull 無淨資產匯總）。
+
+        raw=True 時 data 為各券商戶口的原生記錄，不做欄位映射、去重或 acc_type 過濾（原生行沒有這些
+        欄位），故 acc_type 只可為 all，否則明確返回 status=False；currency 仍由各券商按自己的原生欄位
+        篩選，取數範圍與非 raw 時一致。IB 的 accountSummary 本來是一個 tag 一列，故其原生結果即長格式。
         """
         if acc_type not in ACC_FILTERS:
-            return _accounts_fail(f"bad_acc_type: {acc_type}，可取 {'/'.join(ACC_FILTERS)}")
+            return _accounts_fail(f"bad_acc_type: {acc_type}，可取 {'/'.join(ACC_FILTERS)}", raw=raw)
+        if raw and acc_type != "all":
+            return _accounts_fail(
+                f'bad_acc_type: raw=True 時不可按 acc_type 過濾（原生記錄沒有該欄位），請用 acc_type="all"',
+                raw=raw,
+            )
         if broker is None:
             adapters = list(self._brokers.values())
         else:
             adapter = self._brokers.get(broker)
             if adapter is None:
-                return _accounts_fail(f"unknown_source: {broker}；已啟用 {', '.join(self._brokers) or '無'}")
+                return _accounts_fail(
+                    f"unknown_source: {broker}；已啟用 {', '.join(self._brokers) or '無'}", raw=raw,
+                )
             adapters = [adapter]
 
         rows: list[dict] = []
@@ -344,25 +476,28 @@ class Brokery:
                 )
                 continue
             try:
-                rows.extend(adapter.get_accounts(currency))
+                rows.extend(adapter.get_accounts(currency, raw=raw))
             except Exception as exc:
                 notes.append(f"{adapter.source}: {type(exc).__name__}: {exc}")
 
-        kept: list[dict] = []
-        for row in rows:
-            if acc_type == "all" or row["acc_type"] == acc_type:
-                kept.append(row)
-            elif row["acc_type"] not in ACC_FILTERS:
-                # 券商原樣透傳的戶口性質（如 IB 的 AccountType=INDIVIDUAL → individual）不在統一詞表內：
-                # 既不能當它符合篩選，亦不可靜默丟列，否則該券商在結果中無故消失而無從得知原因。
-                notes.append(f"acc_type_other: {row['source']} 的 {row['account_id']} 為 {row['acc_type']}"
-                             f"（非 {'/'.join(ACC_FILTERS[1:])}），未列入")
-        rows = _dedupe_accounts(kept)
+        if not raw:
+            kept: list[dict] = []
+            for row in rows:
+                if acc_type == "all" or row["acc_type"] == acc_type:
+                    kept.append(row)
+                elif row["acc_type"] not in ACC_FILTERS:
+                    # 券商原樣透傳的戶口性質（如 IB 的 AccountType=INDIVIDUAL → individual）不在統一詞表內：
+                    # 既不能當它符合篩選，亦不可靜默丟列，否則該券商在結果中無故消失而無從得知原因。
+                    notes.append(f"acc_type_other: {row['source']} 的 {row['account_id']}"
+                                 f" 為 {row['acc_type']}（非 {'/'.join(ACC_FILTERS[1:])}），未列入")
+            rows = _dedupe_accounts(kept)
         detail = f"{len(rows)} 個戶口（來源 {', '.join(a.source for a in adapters)}）"
         if not rows:
-            return _accounts_fail("no_account: " + "；".join(notes or ["沒有符合條件的戶口"]))
+            return _accounts_fail(
+                "no_account: " + "；".join(notes or ["沒有符合條件的戶口"]), raw=raw,
+            )
         message = f"ok: {detail}" + ("" if not notes else "；注意：" + "；".join(notes))
-        return _accounts_ok(rows, message)
+        return _accounts_ok(rows, message, raw=raw)
 
     # ---------- 連線狀態 ----------
 
@@ -429,37 +564,110 @@ class Brokery:
         try:
             frame = store.load_frame(name)
         except StoreError as exc:
-            return _fail(f"{exc}；請先執行 run_futu_codes_store.py")
+            return _fail(f"{exc}；請先執行 refresh_codes()")
         return {
             "status": True,
             "data": frame,
             "message": f"ok: 離線讀回 {len(frame)} 條 CODES（{name}）",
         }
 
+    def get_code_meta(self, name: str = store.CODES_DATASET) -> dict:
+        """離線快照的元資料：行數、存放時間、距今秒數、是否過舊、上次更新失敗的原因。
+        離線執行，不需要任何券商連線。"""
+        try:
+            meta = store.load_meta(name)
+        except StoreError as exc:
+            return _fail(str(exc))
+        row = {
+            "name": meta.get("name", name),
+            "rows": int(meta.get("rows", 0)),
+            "columns_count": len(meta.get("columns", [])),
+            "saved_at": meta.get("saved_at", ""),
+            "age_seconds": round(store.meta_age(meta), 1),
+            "stale": store.meta_stale(meta, codes_max_age_seconds()),
+            "source": meta.get("source", ""),
+            "note": meta.get("note", ""),
+            "last_refresh_error": meta.get("last_refresh_error", ""),
+        }
+        return {
+            "status": True,
+            "data": pd.DataFrame([row], columns=list(CODES_META_COLUMNS)),
+            "message": f"ok: 快照 {row['rows']} 條，存放於 {row['saved_at'] or '未知時間'}",
+        }
+
+    def refresh_codes(self, markets: Iterable[str] | None = None, *, force: bool = False) -> dict:
+        """重拉全量 CODES 並更新離線快照；失敗或某品種明顯縮細時保留原快照，不寫入。
+
+        快照只由富途構成（資料集即 store.CODES_DATASET，meta.source 記為 futu），故這裡固定只向
+        futu 取：其他券商的標識体系不同（IB 以 conId/ISIN），混進去只會污染同一份代碼表。
+        成功時 data 為更新後的快照元資料（見 get_code_meta），不返回全量行：數萬條已由 get_code
+        離線讀回（實測 0.03s），在這裡再帶一次只是把同一份資料搬兩遍。
+        """
+        markets = tuple(markets) if markets else DEFAULT_STOCK_MARKETS
+        name = store.CODES_DATASET
+        result = self.list_all(markets, broker=CODES_SOURCE)
+        if not result["status"]:
+            self._note_codes_error(f"failed: {result['message']}")
+            return _fail(f"更新失敗：{result['message']}；已保留原快照")
+
+        try:
+            previous = store.load_frame(name)
+        except StoreError:
+            previous = pd.DataFrame()
+        fresh, carried = _codes_carry_over(previous, result["data"])
+        reason = _codes_shrink(previous, fresh)
+        if reason and not force:
+            self._note_codes_error(f"rejected: {reason}")
+            return _fail(f"拒絕更新：{reason}；已保留原快照，必要時用 force=True")
+
+        parts = [text for text in (carried, _codes_diff(previous, fresh)) if text]
+        path = store.save_frame(name, fresh, source=CODES_SOURCE,
+                                note=f"{'/'.join(markets)} 全量 CODES")
+        meta = self.get_code_meta(name)
+        return {
+            "status": True,
+            "data": meta["data"],
+            "message": f"ok: 已更新 {len(fresh)} 條 CODES（{'；'.join(parts) or '無先前快照'}）→ {path.name}",
+        }
+
+    @staticmethod
+    def _note_codes_error(message: str) -> None:
+        """把更新失敗記進快照的 meta；尚未有快照時沒有 meta，略過。"""
+        try:
+            store.update_meta(store.CODES_DATASET, last_refresh_error=message)
+        except StoreError:
+            pass
+
     # ---------- 內部 ----------
 
     def _gather(self, symbol_type: str, call, label: str,
-                broker: str | None = None, markets: Iterable[str] | None = None) -> dict:
+                broker: str | None = None, markets: Iterable[str] | None = None,
+                raw: bool = False) -> dict:
         """向聲明支持該品種的券商取清單。
 
         broker 指定只向一家取：未啟用即 unknown_source，該家未聲明該品種即 type_unsupported，一律明確
         報錯而不靜默改用別家。markets 只過濾返回行的 market，用於沒有市場參數的接口（期貨／指數）；
         股票清單的市場由適配器自己處理，這裡的過濾只是確保返回的確實是所請求的市場。
+
+        raw=True 時返回行為各券商的原生欄位，沒有 market/code：逐行的市場過濾與跨券商去重（兩者均以
+        統一欄位名為鍵）一律跳過，市場範圍已由調用方的種子保證，跨券商的原生行則按原樣串接。
         """
         if broker:
             adapter = self._brokers.get(broker)
             if adapter is None:
-                return _fail(f"unknown_source: {broker}；已啟用 {', '.join(self._brokers) or '無'}")
+                return _fail(f"unknown_source: {broker}；已啟用 {', '.join(self._brokers) or '無'}", raw=raw)
             if not adapter.supports(symbol_type):
                 return _fail(
                     f"type_unsupported: {broker} 不提供{label}"
-                    f"（{broker} 只提供 {'/'.join(adapter.capabilities) or '無'}）"
+                    f"（{broker} 只提供 {'/'.join(adapter.capabilities) or '無'}）", raw=raw,
                 )
             providers = [adapter]
         else:
             providers = [b for b in self._brokers.values() if b.supports(symbol_type)]
             if not providers:
-                return _fail(f"no_source: 已啟用的券商（{', '.join(self._brokers)}）不提供{label}")
+                return _fail(
+                    f"no_source: 已啟用的券商（{', '.join(self._brokers)}）不提供{label}", raw=raw,
+                )
 
         rows: list[dict] = []
         errors: list[str] = []
@@ -469,10 +677,11 @@ class Brokery:
             except Exception as exc:
                 errors.append(f"{adapter.source}: {type(exc).__name__}: {exc}")
 
-        rows = dedupe_rows(rows)
+        if not raw:
+            rows = dedupe_rows(rows)
         if not rows and errors:
-            return _fail(f"{label}取得失敗：" + "；".join(errors))
-        if markets:
+            return _fail(f"{label}取得失敗：" + "；".join(errors), raw=raw)
+        if markets and not raw:
             keep = {str(m).upper() for m in markets}
             kept = [row for row in rows if row["market"] in keep]
             if not kept and rows:
@@ -480,7 +689,19 @@ class Brokery:
                 return _fail(f"empty_list: {label}在 {'/'.join(sorted(keep))} 沒有條目")
             rows = kept
         message = "ok" if not errors else f"ok（{len(rows)} 條，部分券商失敗）" + "；".join(errors)
-        return _ok(rows, message)
+        return _ok(rows, message, raw=raw)
+
+
+def _seeds_in_market(seeds: list, markets: Iterable[str] | None) -> list:
+    """按統一市場前綴篩選種子。
+
+    raw=True 時返回行沒有 market 欄位，逐行過濾無從做起，故期貨與指數的市場範圍改由這裡保證：
+    不請求的市場根本不發出請求，取數範圍與非 raw 時一致。
+    """
+    if not markets:
+        return seeds
+    keep = {str(m).upper() for m in markets}
+    return [seed for seed in seeds if str(seed.market).upper() in keep]
 
 
 def _dedupe_accounts(rows: list[dict]) -> list[dict]:

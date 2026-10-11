@@ -42,6 +42,7 @@ from .base import (
     CAP_INDEX,
     CAP_STOCK,
     BarMerger,
+    NativeBars,
     SymbolBroker,
     account_row,
     align_ts,
@@ -162,12 +163,14 @@ class TigerBroker(SymbolBroker):
 
     # ---------- 標的清單 ----------
 
-    def list_stocks(self, markets: Iterable[str]) -> list[dict]:
+    def list_stocks(self, markets: Iterable[str], *, raw: bool = False) -> list[dict]:
         """股票清單：get_symbol_names 一次返回該市場的全部符號與名稱（實測 HK 3763／US 14609）。
 
         清單接口不附帶交易所與貨幣（get_stock_details 需行情權限，實測本戶口被拒），故 exchange
         留空；currency 由統一市場前綴推得，與富途適配器同一處理。以句點開頭者為指數，交由
         list_indices 返回，不在此列作股票。
+        raw=True 時每列只有 get_symbol_names 的原生內容：symbol 與 name 即其返回的兩欄，market 為該次
+        請求的市場參數（Tiger 的寫法，非統一市場代碼）；不做代碼構造與市場推導，取數範圍不變。
         """
         quote = self._quote_client()
         rows: list[dict] = []
@@ -182,6 +185,9 @@ class TigerBroker(SymbolBroker):
                 symbol = str(symbol)
                 if symbol.startswith("."):
                     continue
+                if raw:
+                    rows.append({"market": str(tiger_market), "symbol": symbol, "name": str(name)})
+                    continue
                 rows.append(self.make_row(
                     code=build_code(market, symbol),
                     name=str(name),
@@ -190,16 +196,15 @@ class TigerBroker(SymbolBroker):
                     symbol_type=STOCK,
                     currency=currency_of(market),
                     exchange="",
-                    expiry="",
-                    raw_code=f"{tiger_market}|{symbol}",
                 ))
         return rows
 
-    def list_indices(self, seeds: Iterable) -> list[dict]:
+    def list_indices(self, seeds: Iterable, *, raw: bool = False) -> list[dict]:
         """指數清單：取 Tiger 符號表中以句點前綴登記的指數（實測僅 US 四隻）。
 
         Tiger 沒有獨立的指數列舉接口，其指數只作為符號表的一小部分出現，故這裡返回的就是 Tiger
         自身登記的全部指數，範圍遠小於富途；seeds 只用於限定市場，不據此補出 Tiger 沒有的指數。
+        raw=True 時的欄位同 list_stocks。
         """
         markets = {str(seed.market).upper() for seed in seeds}
         quote = self._quote_client()
@@ -211,6 +216,9 @@ class TigerBroker(SymbolBroker):
                 symbol = str(symbol)
                 if not symbol.startswith("."):
                     continue
+                if raw:
+                    rows.append({"market": str(tiger_market), "symbol": symbol, "name": str(name)})
+                    continue
                 rows.append(self.make_row(
                     code=build_code(market, symbol),
                     name=str(name),
@@ -219,18 +227,20 @@ class TigerBroker(SymbolBroker):
                     symbol_type=INDEX,
                     currency=currency_of(market),
                     exchange="",
-                    expiry="",
-                    raw_code=f"{tiger_market}|{symbol}",
                 ))
         return rows
 
-    def list_futures(self, seeds: Iterable) -> list[dict]:
+    def list_futures(self, seeds: Iterable, *, raw: bool = False) -> list[dict]:
         """期貨清單：get_future_exchanges 列出接入的交易所，逐個以 get_future_contracts 取全部
         合約（實測 CME 240／HKEX 84，已含全部到期月與主連），故不需要種子表；seeds 只作市場限定。
 
         主連以 contract_month 為空識別（continuous 欄不可靠，實測 CME 的 ESmain 回報 False），統一
-        寫成 root+main；個月份的到期月以 contract_month（YYYYMM）填入 expiry。trade=False 的合約不可
+        寫成 root+main；個月份寫成 root+contract_month（如 ES202512），因統一格式不設到期月欄，
+        合約必須由代碼唯一標識。trade=False 的合約不可
         交易，不列入。Tiger 接入但無統一市場前綴的交易所（如 EUREX）一律跳過，不憑空造出市場。
+        raw=True 時每列為 get_future_contracts 返回的原生欄位（contract_code/exchange/currency/type/
+        contract_month/name 等），不做市場推導與符號構造；取數範圍不變（仍只取可交易且市場在 seeds 內
+        的合約，市場判定仍按 exchange 與 currency 計算）。
         """
         wanted = {str(seed.market).upper() for seed in seeds}
         rows: list[dict] = []
@@ -247,10 +257,13 @@ class TigerBroker(SymbolBroker):
                     continue
                 if market not in wanted:
                     continue
+                if raw:
+                    rows.append(dict(zip(frame.columns, item)))
+                    continue
                 contract = _text(item.contract_code)
                 root = (_text(item.type) or split_future_symbol(contract)[0]).upper()
                 expiry = _text(item.contract_month)
-                symbol = root if expiry else f"{root}{MAIN_SUFFIX}"
+                symbol = f"{root}{expiry}" if expiry else f"{root}{MAIN_SUFFIX}"
                 rows.append(self.make_row(
                     code=build_code(market, symbol),
                     name=_text(item.name),
@@ -259,18 +272,18 @@ class TigerBroker(SymbolBroker):
                     symbol_type=FUTURE,
                     currency=currency,
                     exchange=exchange,
-                    expiry=expiry,
-                    raw_code=f"FUT|{contract}|{exchange}|{currency}|{expiry}",
                 ))
         return rows
 
     # ---------- K 線 ----------
 
-    def get_kline(self, code: str, ktype: str, count: int, autype: str) -> list[dict]:
+    def get_kline(self, code: str, ktype: str, count: int, autype: str, *, raw: bool = False) -> list[dict]:
         """按 bar 數取 K 線，返回按 ts 升序的最近 count 根。
 
         get_bars 的 limit 即 bar 數（不給時間範圍時返回最近的 bar），與富途語義一致；超過單次
         上限時改用 SDK 的 get_bars_by_page（向後分頁後已按 time 升序合併）。
+        raw=True 時列為 get_bars/get_bars_by_page 返回的原生欄位（time 為毫秒 epoch），排序與截尾改按
+        原生 time（同一格式，升序即時間升序），取數範圍不變。
         """
         if ktype not in TIGER_PERIOD:
             raise CodeError(f"ktype_unsupported: {ktype}（可用：{'/'.join(TIGER_PERIOD)}）")
@@ -293,6 +306,10 @@ class TigerBroker(SymbolBroker):
                 total=count,
                 page_size=PAGE_MAX,
             )
+        if raw:
+            rows = frame.to_dict("records")
+            rows.sort(key=lambda row: row.get("time") or 0)
+            return rows[-count:]
         rows = [
             self._to_kline_row(
                 code, parsed.market, ktype, item.time, item.open, item.high, item.low,
@@ -311,12 +328,15 @@ class TigerBroker(SymbolBroker):
         autype: str,
         seconds: float,
         on_update,
+        *,
+        raw: bool = False,
     ) -> dict[str, list[dict]]:
         """串流多個代碼的最新 1 分鐘 K 線，全部共用同一條推送長連接。
 
         先以 get_bars 取最近 count 根作起點，之後訂閱 subscribe_kline：Tiger 每次成交即推送當前
         分鐘的 bar（未走完的 bar 反覆推送），有變化才呼叫 on_update(code, rows)。回調在 SDK 的
         推送執行緒中發生。訂閱必須在連上時才建立：斷線自動重連後訂閱不會恢復。
+        raw=True 時起點與推送一律為原生欄位（time 為毫秒 epoch），按原生 time 合併（見 NativeBars）。
         """
         if ktype not in self.stream_ktypes:
             raise CodeError(
@@ -332,14 +352,14 @@ class TigerBroker(SymbolBroker):
         owners = {_native_symbol(market, parse_code(code).symbol): code for code, market in markets.items()}
         mergers: dict[str, BarMerger] = {}
         for code in codes:
-            merger = BarMerger(count)
-            merger.merge(self.get_kline(code, ktype, min(count, PAGE_MAX), autype))
+            merger = NativeBars(count, "time") if raw else BarMerger(count)
+            merger.merge(self.get_kline(code, ktype, min(count, PAGE_MAX), autype, raw=raw))
             mergers[code] = merger
 
         config = self._client_config()
         protocol, host, port = config.socket_host_port
         push = PushClient(host, port, use_ssl=(protocol == "ssl"), client_config=config)
-        push.kline_changed = self._push_handler(owners, markets, ktype, mergers, on_update)
+        push.kline_changed = self._push_handler(owners, markets, ktype, mergers, on_update, raw=raw)
         push.connect_callback = lambda *_: push.subscribe_kline(list(owners))
         self._push = push
         try:
@@ -351,7 +371,7 @@ class TigerBroker(SymbolBroker):
 
     # ---------- 戶口 ----------
 
-    def get_accounts(self, currency: str | None = None) -> list[dict]:
+    def get_accounts(self, currency: str | None = None, *, raw: bool = False) -> list[dict]:
         """戶口清單與資金：get_managed_accounts 定戶口性質，get_assets 取資金。
 
         只取 account_type=STANDARD 的真實戶口（PAPER 為模擬戶口，統一格式不再區分環境，紙面資金
@@ -359,6 +379,9 @@ class TigerBroker(SymbolBroker):
         get_assets 只按帳戶返回其結算幣的數字，沒有按幣種的參數（實測傳 base_currency 被拒），故
         currency 只作篩選：與該戶口結算幣不符即不返回該戶口，一律不做匯率換算。Tiger 以 inf 表示
         該幣種無此項（實測空戶口的保證金要求為 inf），一律還原為 NaN。
+        raw=True 時每列為該戶口的原生記錄：get_managed_accounts 的 AccountProfile 各欄加上 get_assets
+        的 summary（Account）各欄，不做映射或改名；inf 即原生的 inf，不還原為 NaN。取數範圍不變
+        （仍只取 STANDARD 戶口，currency 仍按該戶口結算幣篩選）。
         """
         trade = self._trade_client()
         rows: list[dict] = []
@@ -373,6 +396,9 @@ class TigerBroker(SymbolBroker):
             currency_of_account = str(getattr(summary, "currency", "") or "")
             if currency and currency_of_account and currency.upper() != currency_of_account.upper():
                 continue
+            if raw:
+                rows.append({**vars(profile), **vars(summary)})
+                continue
             capability = str(profile.capability)
             rows.append(account_row(
                 source=self.source,
@@ -386,18 +412,22 @@ class TigerBroker(SymbolBroker):
 
     # ---------- 內部 ----------
 
-    def _push_handler(self, owners, markets, ktype, mergers, on_update):
-        """構造推送回調：把 Tiger 的分鐘 bar 換算為統一列並併入各代碼的 BarMerger。"""
+    def _push_handler(self, owners, markets, ktype, mergers, on_update, raw: bool = False):
+        """構造推送回調：把 Tiger 的分鐘 bar 換算為統一列並併入各代碼的合併器。"""
 
         def _on_kline(frame) -> None:
             code = owners.get(frame.symbol)
             merger = mergers.get(code)
             if merger is None:
                 return
-            row = self._to_kline_row(
-                code, markets[code], ktype, frame.time, frame.open, frame.high, frame.low,
-                frame.close, frame.volume, getattr(frame, "amount", float("nan")),
-            )
+            if raw:
+                # KlineData 為 protobuf 訊息，按其字段原樣取值，不做任何換算或改名。
+                row = {field.name: getattr(frame, field.name) for field in frame.DESCRIPTOR.fields}
+            else:
+                row = self._to_kline_row(
+                    code, markets[code], ktype, frame.time, frame.open, frame.high, frame.low,
+                    frame.close, frame.volume, getattr(frame, "amount", float("nan")),
+                )
             if merger.merge([row]) and on_update is not None:
                 on_update(code, merger.frame())
 

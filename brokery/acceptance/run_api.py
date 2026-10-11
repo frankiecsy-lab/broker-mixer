@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from brokery.brokers.base import ACCOUNT_COLUMNS, BAR_MINUTES, BROKER_COLUMNS, COLUMNS, K_COLUMNS
+from brokery.core import CODES_META_COLUMNS, codes_max_age_seconds
 from brokery_api.app import create_app, frame_payload
 
 KEY = "acceptance-key-9c1f"
@@ -31,14 +32,22 @@ SAMPLE = {"code": "HK.00700", "ts": 1791711000, "time_key": "2026-10-10 16:00:00
           "high": 2.0, "low": 0.5, "close": 1.5, "volume": 10, "turnover": 15, "source": "stub"}
 
 
+NATIVE_BAR = {"symbol": "00700", "time_key": "2026-10-10 16:00:00", "price": 1.5, "lot": None}
+
+
 class StubQuote:
-    """代替 Brokery 的串流：立即推一根完整序列後正常收尾，令 update 事件可離線重複驗證。"""
+    """代替 Brokery 的串流：立即推一根完整序列後正常收尾，令 update 事件可離線重複驗證。
+
+    回呼一律送字典列表，形式與各券商的 BarMerger/NativeBars 一致；raw=True 時送原生欄位。
+    """
 
     def stream_kline(self, codes, **kwargs):
-        frame = pd.DataFrame([[SAMPLE.get(name) for name in K_COLUMNS]], columns=list(K_COLUMNS))
+        rows = [dict(NATIVE_BAR)] if kwargs.get("raw") else [
+            {name: SAMPLE[name] for name in K_COLUMNS}
+        ]
         for code in codes:
-            kwargs["on_update"](code, frame)
-        return {"status": True, "data": frame, "message": "ok: 存根串流結束"}
+            kwargs["on_update"](code, rows)
+        return {"status": True, "data": pd.DataFrame(rows), "message": "ok: 存根串流結束"}
 
     def close(self) -> None:
         pass
@@ -72,8 +81,8 @@ class StubBrokers:
 
 
 class StubLists:
-    """代替 Brokery 的清單：只記錄收到的參數，用來核對閘道把 markets／roots／symbols 大寫後與 broker
-    原樣傳給 core（能力閘與市場過濾本身由 run_list_filter.py 驗收）。"""
+    """代替 Brokery 的清單：只記錄收到的參數，用來核對閘道把 markets／roots／symbols 大寫後與 broker、
+    raw 原樣傳給 core（能力閘與市場過濾本身由 run_list_filter.py 驗收）。"""
 
     def __init__(self) -> None:
         self.calls: list[tuple] = []
@@ -81,16 +90,16 @@ class StubLists:
     def _empty(self):
         return {"status": True, "data": pd.DataFrame(columns=COLUMNS), "message": "ok"}
 
-    def list_stocks(self, markets=None, broker=None):
-        self.calls.append(("list_stocks", markets, broker))
+    def list_stocks(self, markets=None, broker=None, *, raw=False):
+        self.calls.append(("list_stocks", markets, broker, raw))
         return self._empty()
 
-    def list_futures(self, roots=None, markets=None, broker=None):
-        self.calls.append(("list_futures", roots, markets, broker))
+    def list_futures(self, roots=None, markets=None, broker=None, *, raw=False):
+        self.calls.append(("list_futures", roots, markets, broker, raw))
         return self._empty()
 
-    def list_indices(self, symbols=None, markets=None, broker=None):
-        self.calls.append(("list_indices", symbols, markets, broker))
+    def list_indices(self, symbols=None, markets=None, broker=None, *, raw=False):
+        self.calls.append(("list_indices", symbols, markets, broker, raw))
         return self._empty()
 
     def close(self) -> None:
@@ -156,12 +165,38 @@ def main() -> dict:
         check("/codes 離線讀回 CODES", codes["status"] and codes["data"]["columns"] == list(COLUMNS)
               and len(codes["data"]["rows"]) > 0, codes["message"])
 
+        # /codes/meta：快照年齡與是否過舊（供介面顯示「更新」提示）；/codes/refresh 無券商時必須明確
+        # 報錯，且不得動到已存放的快照——離線快照往往是唯一的離線副本。
+        meta = client.get("/codes/meta", headers=HEADERS).json()
+        check("/codes/meta 欄位為 CODES_META_COLUMNS 且為單行",
+              meta["status"] and meta["data"]["columns"] == list(CODES_META_COLUMNS)
+              and len(meta["data"]["rows"]) == 1, meta["message"])
+        row = dict(zip(meta["data"]["columns"], meta["data"]["rows"][0])) if meta["status"] else {}
+        check("/codes/meta 的 stale 與 age_seconds 按同一上限一致",
+              row.get("stale") == (row.get("age_seconds", 0) > codes_max_age_seconds()), str(row)[:160])
+        check("/codes/meta 的 rows 與 /codes 實際行數一致",
+              row.get("rows") == len(codes["data"]["rows"]), f"meta={row.get('rows')} 實際={len(codes['data']['rows'])}")
+        # 不重取全量 /codes（數萬條的序列化是本腳本最慢的一步）：以 meta 的行數核對快照未被破壞。
+        refresh = client.get("/codes/refresh", headers=HEADERS).json()
+        kept = client.get("/codes/meta", headers=HEADERS).json()
+        check("/codes/refresh 無券商時明確報錯並保留原快照",
+              refresh["status"] is False and refresh["message"].startswith("更新失敗")
+              and kept["data"]["rows"][0][list(CODES_META_COLUMNS).index("rows")] == len(codes["data"]["rows"]),
+              refresh["message"])
+
         # 業務失敗仍為 HTTP 200，原因由 status/message 原樣表達，不變成 HTTP 500。
         kline = client.get("/kline", params={"code": "HK.00700", "broker": "futu"}, headers=HEADERS)
         check("未啟用的來源：HTTP 200 且 status=False",
               kline.status_code == 200 and kline.json()["status"] is False, f"HTTP {kline.status_code}")
         check("未啟用的來源：原因原樣透傳", kline.json()["message"].startswith("unknown_source:"),
               kline.json()["message"])
+
+        # raw=True 只改欄位，不改信封與狀態口徑：取不到資料時沒有原生欄位可保留，故返回無欄位的空表。
+        raw_kline = client.get("/kline", params={"code": "HK.00700", "broker": "futu", "raw": "1"},
+                               headers=HEADERS).json()
+        check("raw 失敗信封仍為三鍵且 data 無欄位",
+              set(raw_kline) == {"status", "data", "message"} and raw_kline["status"] is False
+              and raw_kline["data"]["columns"] == [], str(raw_kline)[:140])
 
         accounts = client.get("/accounts", headers=HEADERS).json()
         check("無戶口時明確報錯", not accounts["status"] and accounts["message"].startswith("no_account:"),
@@ -219,20 +254,27 @@ def main() -> dict:
               == list(BROKER_COLUMNS), f"{len(body['data']['rows'])} 行")
         check("/brokers 的 JSON 不含非法的 NaN", "NaN" not in got.text, got.text[:120])
 
-        # 清單接口的參數透傳：市場大寫為統一前綴、broker 原樣傳入（省略即 None，不自行補預設）。
+        # 清單接口的參數透傳：市場大寫為統一前綴、broker 與 raw 原樣傳入（省略即 None/False，不自行補預設）。
         lists = StubLists()
         app.state.brokery = lists
         for path, params in (("/stocks", {"markets": "hk,us", "broker": "futu"}),
                              ("/stocks", {}),
+                             ("/stocks", {"markets": "hk", "raw": "1"}),
                              ("/futures", {"roots": "es", "markets": "hk", "broker": "ib"}),
-                             ("/indices", {"symbols": "spx", "markets": "us", "broker": "tiger"})):
+                             ("/futures", {"markets": "hk", "raw": "true"}),
+                             ("/indices", {"symbols": "spx", "markets": "us", "broker": "tiger"}),
+                             ("/indices", {"markets": "us", "raw": "0"})):
             got = client.get(path, params=params, headers=HEADERS)
             check(f"{path} 返回信封完整", got.status_code == 200 and got.json()["status"] is True,
                   f"HTTP {got.status_code}")
-        check("markets／roots／symbols 大寫為統一前綴，broker 原樣傳入",
-              lists.calls == [("list_stocks", ("HK", "US"), "futu"), ("list_stocks", None, None),
-                              ("list_futures", ("ES",), ("HK",), "ib"),
-                              ("list_indices", ("SPX",), ("US",), "tiger")],
+        check("markets／roots／symbols 大寫為統一前綴，broker／raw 原樣傳入",
+              lists.calls == [("list_stocks", ("HK", "US"), "futu", False),
+                              ("list_stocks", None, None, False),
+                              ("list_stocks", ("HK",), None, True),
+                              ("list_futures", ("ES",), ("HK",), "ib", False),
+                              ("list_futures", None, ("HK",), None, True),
+                              ("list_indices", ("SPX",), ("US",), "tiger", False),
+                              ("list_indices", None, ("US",), None, False)],
               "；".join(str(call) for call in lists.calls))
 
     # DataFrame→JSON 的取值口徑：缺失值一律為 null，整數不帶小數，且不得出現非法的 NaN。
@@ -285,7 +327,7 @@ def main() -> dict:
         with client.websocket_connect(f"/stream?api_key={KEY}") as ws:
             ws.send_json({"action": "subscribe", "codes": ["HK.00700"], "ktype": "1m", "count": 3, "broker": "ib"})
             ws.receive_json()  # subscribed
-            update = ws.receive_json()
+            update = until(ws, "event", "update")  # 有上限：事件未到來即判失敗，不無限等待
             check("WS update 事件帶完整序列且欄位為 K_COLUMNS",
                   update["event"] == "update" and update["code"] == "HK.00700"
                   and update["data"]["columns"] == list(K_COLUMNS) and len(update["data"]["rows"]) == 1,
@@ -297,6 +339,15 @@ def main() -> dict:
             closed = until(ws, "event", "closed")
             check("WS stop 回報 closed 並說明名額", closed["event"] == "closed" and "release_in" in closed,
                   str(closed)[:120])
+
+        with client.websocket_connect(f"/stream?api_key={KEY}") as ws:
+            ws.send_json({"action": "subscribe", "codes": ["HK.00700"], "ktype": "1m", "count": 3,
+                          "broker": "futu", "raw": True})
+            ws.receive_json()  # subscribed
+            raw_update = until(ws, "event", "update")
+            check("WS raw=True 時 update 的欄位即原生欄位",
+                  raw_update["event"] == "update"
+                  and raw_update["data"]["columns"] == list(NATIVE_BAR), str(raw_update)[:160])
 
         hold = HoldQuote()
         stream_app.state.brokery = hold

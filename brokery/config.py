@@ -26,6 +26,7 @@ class Settings:
     ib_client_id: int
     request_timeout: float
     data_dir: Path
+    codes_max_age_hours: float
     tiger_id: str
     tiger_account: str
     tiger_token: str
@@ -60,6 +61,7 @@ def get_settings() -> Settings:
         ib_client_id=int(os.getenv("IB_CLIENT_ID", "99")),
         request_timeout=float(os.getenv("IB_REQ_TIMEOUT", "30")),
         data_dir=_path("BROKERY_DATA_DIR", "brokery/data"),
+        codes_max_age_hours=float(os.getenv("CODES_MAX_AGE_HOURS", "24")),
         tiger_id=os.getenv("TIGER_ID", ""),
         tiger_account=os.getenv("TIGER_ACCOUNT", ""),
         tiger_token=os.getenv("TIGER_TOKEN", ""),

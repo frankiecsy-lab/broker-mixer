@@ -2,6 +2,9 @@
 已啟用的戶口、currency 欄有無真係填到，以及 acc_type / currency / broker 三個參數在非法或不支持時明確
 報錯。券商原樣透傳、不在統一詞表內的戶口性質（如 IB 的 individual）在按 acc_type 篩選時必須在 message
 點名說明，不得靜默丟列。
+每家再以 raw=True 取一次同一請求：信封仍為三鍵、欄位即該券商自帶的戶口記錄（不是 ACCOUNT_COLUMNS）、
+行數不少於統一格式（raw 不去重）；不支持的幣種同樣明確報錯（由各適配器按原生欄位篩），明確要求 acc_type
+時一律拒绝（原生記錄無該欄位，不能假裝已過濾）。
 
 以腳本方式直接執行：
     python brokery/acceptance/run_get_accounts.py
@@ -38,6 +41,7 @@ def frame_checks(name: str, frame: pd.DataFrame) -> list[tuple[str, bool, str]]:
 
 def main() -> dict:
     frames: dict[str, pd.DataFrame] = {}
+    checks_raw: list[tuple[str, bool, str]] = []
     with Brokery() as b:
         for name in BROKERS:
             result = b.get_accounts(broker=name)
@@ -46,6 +50,29 @@ def main() -> dict:
                 frames[name] = result["data"]
                 print(result["data"][["source", "account_id", "acc_type", "status", "currency",
                                       "net_liquidation", "cash", "buying_power"]].to_string())
+            raw = b.get_accounts(broker=name, raw=True)
+            print(f"\n===== {name} raw=True status={raw['status']} rows={len(raw['data'])} "
+                  f"columns={list(raw['data'].columns)} message={raw['message']}")
+            if result["status"]:
+                columns = list(raw["data"].columns)
+                checks_raw.append((f"{name} raw：信封仍只有三鍵", set(raw) == {"status", "data", "message"},
+                                   str(sorted(raw))))
+                checks_raw.append((f"{name} raw：欄位即該券商自帶的戶口記錄（不是 ACCOUNT_COLUMNS）",
+                                   raw["status"] and bool(columns) and columns != ACCOUNT_COLUMNS,
+                                   ",".join(columns[:8])))
+                checks_raw.append((f"{name} raw：仍取到戶口（raw 不改變取數範圍）",
+                                   raw["status"] and len(raw["data"]) >= len(frames[name]),
+                                   f"raw={len(raw['data'])} 統一={len(frames[name])}"))
+            # 不支持的幣種在 raw 下同樣必須明確報錯：由各適配器按原生欄位篩，不是 core 做行過濾。
+            none_raw = b.get_accounts(broker=name, currency="ZZZ", raw=True)
+            checks_raw.append((f"{name} raw：不支持的幣種明確報錯（不返回其他幣種湊數）",
+                               not none_raw["status"] and none_raw["message"].startswith("no_account"),
+                               none_raw["message"]))
+            # 原生記錄沒有 acc_type，明確要求時一律拒绝，不能假裝已過濾。
+            bad_raw = b.get_accounts(broker=name, acc_type=ACC_MARGIN, raw=True)
+            checks_raw.append((f"{name} raw：明確 acc_type 一律拒绝",
+                               not bad_raw["status"] and bad_raw["message"].startswith("bad_acc_type"),
+                               bad_raw["message"]))
 
         # 參數邊界：非法的 acc_type、未啟用的券商、不支持的 acc_type、以及不存在於任何戶口的幣種。
         bad_type = b.get_accounts(acc_type="leveraged")
@@ -118,6 +145,7 @@ def main() -> dict:
             print(f"\n===== 全部券商（{len(combined)} 列）=====")
             print(combined[["source", "account_id", "acc_type", "currency"]].to_string())
 
+    checks += checks_raw
     for label, passed, detail in checks:
         print(f"{'PASS' if passed else 'FAIL'} {label}（{detail}）")
     failed = [label for label, passed, _ in checks if not passed]

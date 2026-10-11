@@ -31,6 +31,7 @@ from .base import (
     CAP_FUTURE,
     CAP_STOCK,
     BarMerger,
+    NativeBars,
     SymbolBroker,
     account_row,
     align_ts,
@@ -207,12 +208,16 @@ class WebullBroker(SymbolBroker):
 
     # ---------- 標的清單 ----------
 
-    def list_stocks(self, markets: Iterable[str]) -> list[dict]:
+    def list_stocks(self, markets: Iterable[str], *, raw: bool = False) -> list[dict]:
         """股票清單：按 category + sub_category 分頁取全部在市代碼（實測 HK 3170／US 11680）。
 
         currency 與 exchange 一律為接口原生值：Webull 以自有的場所代號登記（實測港股為 HKG／XGEM，
         美股為 NYSE／NAS／NSQ／NMS／PSE／BAT 等），各券商對同一場所的寫法本來不同，不憑空歸一；
-        原生 instrument_id 保留在 raw_code 以便回溯核對。
+        原生 instrument_id 只在其原生格式（raw=True）中出現，統一格式不重複承載。
+
+        raw=True 時每列即 list_instruments 單條記錄的原生欄位（symbol 為 Webull 原生符號，不含市場
+        前綴；無 market/code/symbol_type 等統一欄位），不做符號歸一化與構造；取數範圍不變（同一批
+        category/sub_category 與 status="OC" 條件）。
         """
         rows: list[dict] = []
         for market in markets:
@@ -222,6 +227,9 @@ class WebullBroker(SymbolBroker):
                 for item in self._paged_instruments(
                     category=category, sub_category=sub_category, status="OC"
                 ):
+                    if raw:
+                        rows.append(dict(item))
+                        continue
                     symbol = _native_symbol(market, str(item["symbol"]))
                     rows.append(self.make_row(
                         code=build_code(market, symbol),
@@ -231,12 +239,10 @@ class WebullBroker(SymbolBroker):
                         symbol_type=STOCK,
                         currency=str(item.get("currency", "")),
                         exchange=str(item.get("exchange_code", "")),
-                        expiry="",
-                        raw_code=f"{category}|{sub_category}|{item.get("instrument_id", "")}",
                     ))
         return rows
 
-    def list_futures(self, seeds: Iterable) -> list[dict]:
+    def list_futures(self, seeds: Iterable, *, raw: bool = False) -> list[dict]:
         """期貨清單：逐個種子 root 展開其在市合約（實測 HSI 13 個月、ES 2 個月）。
 
         Webull 沒有批量期貨清單接口（contracts/list 不带 code 或 symbol 即 417），而 products/list
@@ -244,6 +250,9 @@ class WebullBroker(SymbolBroker):
         為準（見 universe.FUTURE_ROOTS）。種子中 Webull 未提供者返回空列表，不憑空補出（實測 VIX
         即如此）。Webull 只掛近月合約（實測美股每個 root 只有最近兩個月），亦沒有主連概念，故不
         生成 main 行。currency 原樣返回（實測農產品期貨為 Webull 自有的 USX，非 ISO 代碼）。
+
+        raw=True 時每列即 get_futures_instrument 單條記錄的原生欄位，不做市場推導、場所映射或符號
+        構造；取數範圍不變（仍按種子所屬市場的 category 逐個 root 展開，仍只留在市合約）。
         """
         rows: list[dict] = []
         for seed in seeds:
@@ -255,27 +264,34 @@ class WebullBroker(SymbolBroker):
             for item in self._futures_instruments(category, seed.root):
                 if item.get("status") not in (None, "OC"):
                     continue
+                if raw:
+                    rows.append(dict(item))
+                    continue
                 native_exchange = str(item.get("exchange_code", ""))
+                # 到期月寫進符號（如 ES202612）：統一格式不設到期月欄，只以 root 表達會令各月份同碼。
+                contract_month = str(item.get("contract_month", ""))
+                symbol = f"{seed.root}{contract_month}" if contract_month else seed.root
                 rows.append(self.make_row(
-                    code=build_code(market, seed.root),
+                    code=build_code(market, symbol),
                     name=str(item.get("name", "")),
                     market=market,
-                    symbol=to_display_symbol(market, seed.root),
+                    symbol=to_display_symbol(market, symbol),
                     symbol_type=FUTURE,
                     currency=str(item.get("currency", "")),
                     exchange=WEBULL_FUTURE_EXCHANGE.get(native_exchange.upper(), native_exchange),
-                    expiry=str(item.get("contract_month", "")),
-                    raw_code=f"{category}|{item.get("symbol", "")}|{native_exchange}|"
-                             f"{item.get("instrument_id", "")}",
                 ))
         return rows
 
     # ---------- K 線 ----------
 
-    def get_kline(self, code: str, ktype: str, count: int, autype: str) -> list[dict]:
+    def get_kline(self, code: str, ktype: str, count: int, autype: str, *,
+                  raw: bool = False) -> list[dict]:
         """按 bar 數取 K 線，返回按 ts 升序的最近 count 根。
 
         count 即 bar 數（與富途語義相同），但接口單次上限為 BAR_MAX，要求多於上限時只能取到該上限。
+
+        raw=True 時列為 get_batch_history_bar 單根 bar 的原生欄位（time 為 epoch 秒，數值可能為字符串），
+        排序與截尾改按原生 time（同一格式，升序即時間升序），不做復權判定以外的任何處理；取數範圍不變。
         """
         timespan = self._timespan(ktype)
         self._check_autype(ktype, autype)
@@ -283,6 +299,10 @@ class WebullBroker(SymbolBroker):
         category = self._category(parsed.market)
         symbol = _native_symbol(parsed.market, parsed.symbol)
         bars = self._bars([symbol], category, timespan, min(count, BAR_MAX)).get(symbol, [])
+        if raw:
+            rows = [dict(bar) for bar in bars]
+            rows.sort(key=lambda row: row.get("time") or 0)
+            return rows[-count:]
         rows = [self._to_kline_row(code, parsed.market, ktype, bar) for bar in bars]
         rows.sort(key=lambda row: row["ts"])
         return rows[-count:]
@@ -295,12 +315,16 @@ class WebullBroker(SymbolBroker):
         autype: str,
         seconds: float,
         on_update,
+        *,
+        raw: bool = False,
     ) -> dict[str, list[dict]]:
         """串流多個代碼的最新 1 分鐘 K 線，全部共用同一個客戶端。
 
         Webull 沒有 K 線推送，故以輪詢批量 bar 接口實現：先取一次作起點，之後每 POLL_SECONDS 取一次，
         最新一根有變化才呼叫 on_update(code, rows)，對外的回呼語義與推送券商一致。不同市場各一次請求
         （category 按市場區分），但共用同一客戶端與 token，對應同時顯示多張 K 線圖。
+
+        raw=True 時起點與推送一律為原生 bar 欄位，按原生 time 合併（見 NativeBars）。
         """
         if ktype not in self.stream_ktypes:
             raise CodeError(
@@ -321,7 +345,9 @@ class WebullBroker(SymbolBroker):
             owners[_native_symbol(parsed.market, parsed.symbol)] = code
             markets[code] = parsed.market
         count = min(count, BAR_MAX)
-        mergers = {code: BarMerger(count) for code in codes}
+        mergers = {
+            code: NativeBars(count, "time") if raw else BarMerger(count) for code in codes
+        }
 
         def pull() -> None:
             for category, (market, owners) in groups.items():
@@ -332,7 +358,9 @@ class WebullBroker(SymbolBroker):
                     merger = mergers.get(code)
                     if merger is None:
                         continue
-                    rows = [self._to_kline_row(code, market, ktype, bar) for bar in bars]
+                    rows = [dict(bar) for bar in bars] if raw else [
+                        self._to_kline_row(code, market, ktype, bar) for bar in bars
+                    ]
                     if merger.merge(rows) and on_update is not None:
                         on_update(code, merger.frame())
 
@@ -348,7 +376,7 @@ class WebullBroker(SymbolBroker):
 
     # ---------- 戶口 ----------
 
-    def get_accounts(self, currency: str | None = None) -> list[dict]:
+    def get_accounts(self, currency: str | None = None, *, raw: bool = False) -> list[dict]:
         """戶口清單與資金：account_v2.get_account_list 定戶口，get_account_balance 取資金。
 
         Webull 只有真實戶口，不需按環境過濾；acc_type 由 account_type 映射（實測為 MRGN）。
@@ -356,6 +384,10 @@ class WebullBroker(SymbolBroker):
         該幣種的明細（沒有該幣種即不返回該戶口），未指定時以 total_asset_currency 的匯總為準，
         一律不做匯率換算。Webull 沒有淨資產與可用資金欄位（只有可提現金額，語義不同），該兩欄為
         NaN；get_account_list 亦不返回戶口狀態，status 為空字串，不以任何數字湊出。
+
+        raw=True 時每列為該戶口的原生記錄：get_account_list 單條與 get_account_balance 返回的合併
+        （含 account_currency_assets 的各幣種明細），不做欄位映射、改名或金額轉換。取數範圍不變
+        （currency 仍按該戶口有無該幣種的明細來篩選）。
         """
         account_api = self._trade_client().account_v2
         rows: list[dict] = []
@@ -371,6 +403,9 @@ class WebullBroker(SymbolBroker):
                 )
                 if block is None:
                     continue
+            if raw:
+                rows.append({**acc, **balance})
+                continue
             rows.append(account_row(
                 source=self.source,
                 account_id=account_id,

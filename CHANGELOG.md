@@ -449,3 +449,80 @@
   連同以其為父的背景 `QThread` 一併被拆，事件循環 abort（faulthandler 顯示無 Python 幀）。啟動腳本改為持有引用。
 - `requirements.txt` 加 `PySide6>=6.6`；新增 `brokery/acceptance/run_gui.py`（29 項），以存根閘道 + Qt 離屏
   （`QT_QPA_PLATFORM=offscreen`）驗收，不需券商連線亦不需顯示器；其中一項直接啟動 `brokery_gui/run.py` 核對窗口會存活。
+- 只在 IDE（PyCharm）崩潰、CMD 正常：PyCharm 注入的 plot 後端 `sitecustomize` 喺解釋器啟動階段已 import
+  pandas → pyarrow，pyarrow 17 自帶舊版 `msvcp140.dll` 先入場，其後 `Qt6Core.dll` 用咗呢份舊 VC++ runtime 即
+  access violation（0xC0000005，無 Python 幀）。pyarrow 26 不再附該 DLL，故 `requirements.txt` 底線改為
+  `pyarrow>=26.0`（全局環境同步升到 26.0.0）。順序排喺 `run.py` 內救唔返——IDE 已喺我方代碼之前 load pyarrow。
+
+### 新增（連券商功能的原生格式 `raw=True`）
+- `brokers/base.py`：`SymbolBroker` 的七個連券商方法一律加 keyword-only `raw=False`；新增 `native_columns(rows)`
+  （按各列鍵的首見順序，不排序、不憑空補欄位）與 `NativeBars(count, time_field)`（raw 模式的串流合併，對外語義與
+  `BarMerger` 一致：只在最新一根有變化時回報、只留最近 count 根、按原生時間升序；各券商時間欄位形態不同，故
+  `_bar_sort_key` 把數字與文字各自成組）。本層仍不 import pandas（DataFrame 只在 core 構造）。
+- `core.py`：新增 `_native_frame(rows)`；`_ok`／`_fail`／`_accounts_ok`／`_accounts_fail` 在 raw 下以原生欄位構表，
+  失敗時空表不帶欄位（原生欄位無從得知）。raw 會跳過只認統一欄位的後處理——`dedupe_rows`、按 `market` 的行過濾、
+  `_dedupe_accounts`、串流的 `(code, ts)` 排序；取數範圍改由市場參數原樣交給適配器、期貨／指數的種子以
+  `_seeds_in_market` 過濾、幣種過濾由各適配器按原生欄位執行。`get_accounts` 在 raw 下明確要求 `acc_type` 一律
+  `bad_acc_type`（原生記錄無該欄位，不能假裝已過濾）。能力閘（`unknown_source`／`type_unsupported`）不受 raw 影響。
+- 四家適配器：`raw=True` 時原樣返回上游的鍵與值，不做欄位映射與時間轉換（時間欄位為各家自己的寫法）。適配器簽名
+  變更的附帶要求：任何 `SymbolBroker` 子類重寫這七個方法時必須接受 `raw=`，否則被 core 包成失敗信封。
+- `brokery_api`：六個取數端點加 `raw: bool = False`（受理 `1/true/yes/on`），`WS /stream` 的訂閱訊息可帶
+  `"raw":true`；`StreamWorker` 按 raw 透傳。修復 `_on_update` 把推送的 `list[dict]` 當 DataFrame 處理（四家推送一律
+  為 dict 列表），改以新增的 `rows_payload()` 產生 `{"columns","rows"}`。
+- `brokery_gui`：「標的列表」改為上下兩張表——上方為 raw（欄位即閘道返回的該券商自帶欄位）、下方為統一格式；同一
+  篩選條件先取統一格式、再同參數 `raw=1` 順序取兩次（同一閘道持有各券商連線，IB 只容許一個 client id，故不併發），
+  新增 `_symbols_seq` 使舊回應不會蓋過已改變的篩選條件，兩表各自顯示自己的失敗原因。`ui/symbols_page.ui` 只加控件
+  （仍不含任何文字），三個語言檔各加 `symbols.raw_title`／`symbols.unified_title`。
+- 新增 `brokery/acceptance/run_raw_frames.py`（37 項，存根適配器，不需任何連線）；既有驗收各加 raw 對照：
+  `run_list_filter.py`（10→14）、`run_list_symbols.py`（四家可達時 142 項）、`run_get_accounts.py`（IB 可達時 59 項）、
+  `run_kline_matrix.py`（四家可達時 48 項）、`run_api.py`（40→54）、`run_gui.py`（29→33）。項數隨來源可達性浮動，
+  連不上者整項跳過並明確報錯。
+- 實測：同一請求在 raw 與統一格式下的根數與收市價逐根相同（最大相差 0.0）。原生欄位為——富途 K 線
+  `code,name,time_key,open,close,high,low,volume,turnover,pe_ratio,turnover_rate,last_close`（`code` 屬上游自帶，
+  一律保留）、Tiger `symbol,next_page_token,time,volume,open,close,high,low`、Webull
+  `time,open,close,high,low,volume,trading_session`、IB 以 `date` 為時間欄；富途戶口記錄約 80 欄且自帶數字型的
+  `acc_type`。Webull 的憑證只開通 HK 行情，故其 K 線對照一律以港股代碼實測（美股為 `market_data_not_subscribed`）。
+
+### 變更（統一格式去掉 `expiry`／`raw_code`；標的列表可選券商）
+- `brokers/base.COLUMNS` 由 10 欄減為 8 欄（`code,name,market,symbol,symbol_type,currency,exchange,source`），
+  `make_row` 同步去掉兩個引數。券商原生標識（富途 `code`、Webull `instrument_id` 等）只在 `raw=True` 的原生格式
+  中出現。
+- 去掉 `expiry` 會令 IB／Tiger／Webull 同一 root 的各月份塌成同一個代碼（呢三家原本只靠 `expiry` 區月），故到期月
+  一律寫進 `symbol`／`code`：IB 為 root + 最後交易日（`US.ES20261218`）、Tiger／Webull 為 root + `contract_month`
+  （`US.ES202512`／`US.ES202612`），與富途既有的寫法（`US.10Y2609`、主連 `main`/`current`）一致。各家月份寫法與
+  產品代碼本來不同，跨券商仍不憑空對齊。`dedupe_rows` 的鍵相应改為 market + symbol_type + symbol（`code` 即合約身份）。
+- IB 的 `convert` 對帶月份的代碼原樣返回該月份（不再只把月份作 IB 的合約參數），使清單所出的代碼可原樣回查。
+- 標的列表選唔到券商：`/capabilities` 返回的是 `symbol_type` 嘅大寫常量（`STOCK/FUTURE/INDEX`），而兩個界面嘅
+  kind 值為細寫，`kind in caps` 恒為 False → 所有券商選項被標為不可選。兩個界面改為顯式的 kind→capability 對映
+  （`brokery_gui/app.py` 的 `KIND_CAPABILITIES`、`brokery_webui/home.html` 的 `KIND_CAPABILITY`）；`brokery_api/ui.html`
+  本來已正確。存根閘道（`run_gui.py`／`run_webui.py`）嘅能力聲明原本用細寫，正好掩蓋呢個錯誤，已改為與真實閘道一致。
+- 驗收由「有冇到期月欄」改為「代碼係咪唯一標識合約」：`run_list_symbols.py` 新增 `carries_contract()`（主連後綴或
+  結尾 4–8 位月份），核對 `code` 無重複、期貨符號已含主連後綴或到期月、股票／指數不帶到期月寫法。
+
+### 新增（離線 CODES 的更新機制）
+- 前提以實測定調：讀一份快照 0.03s（38,569 條），向富途重拉港美全量約 6s，相差約 250 倍。故搜尋與離線檢視一律
+  讀快照，重拉唔放進任何請求路徑；而快照往往是唯一嘅離線副本，更新時先至要考虑點樣唔搞壞佢。
+- `store.save_frame` 改為原子寫入：先寫 `<name>.parquet.tmp` 再 `os.replace`，中途失敗唔會留下半檔；被覆蓋嘅舊檔
+  保留為 `<name>.prev.parquet`（只一份）。新增 `prev_path()`、`update_meta(**fields)`、`meta_age()`（非有限值視為
+  無存放時間）、`meta_stale()`。
+- `core.refresh_codes(markets=None, *, force=False)`：重拉並覆蓋快照。三層防護——
+  **縮細防護**按 `symbol_type` 逐個比較，任何品種少於原本嘅 `CODES_MIN_KEEP_RATIO`（0.9）即拒絕覆蓋（只拉部分市場
+  唔應該把全量快照削走一半，故不带 `markets` 即全量係唯一正常用法）；**沿用舊快照**：某品種本次取唔到（實測指數
+  清單被拒）即沿用該品種舊快照嘅行，其餘照常更新；**失敗留痕**：原因記進 meta 嘅 `last_refresh_error`。
+  返回仍為信封，`data` 為一行元資料（欄位即 `CODES_META_COLUMNS`），`message` 為差額報告（各品種增減與沿用說明）。
+  單靠縮細防護會令呢度永遠更新唔到（指數一直取唔到），所以兩層要一齊先至行得通。
+- `core.get_code_meta()` 返回一行 DataFrame（`age_seconds`、`stale`、`last_refresh_error` 等），行而唔係 dict，
+  先至塞得落信封嘅 `frame_payload`。過舊界限讀 `.env` 嘅 `CODES_MAX_AGE_HOURS`（預設 24）。
+- 閘道新增 `GET /codes/meta`、`GET /codes/refresh`（保持只有 GET）；`auto_refresh_codes` 只在啟動時發現快照已過舊
+  先至喺背景线程重拉一次，唔阻塞啟動。Web UI 以 `/api/codes/meta`、`/api/codes/refresh` 原樣轉發，唔自行解讀。
+- 三個界面一律另列一行顯示快照的行數與距今時間，並有「更新」按鈕；呢行同即時取數嘅按來源統計分開，快照狀態唔會
+  混入各來源嘅條數。過舊屬警告（`COLOR_WARN` / `.msg.warn`）而唔係錯誤：已存放嘅資料仍然可用。只有
+  `brokery_api/ui.html` 會以自由文字搜尋離線快照，故只有佢喺「零結果且快照過舊」時提示按「更新 CODES」。
+- 驗收：新增 `run_codes_refresh.py`（22 項，以存根代替 `list_all`，用 `acceptance_` 前綴嘅臨時資料集，跑完即刪）；
+  `run_api.py` 加 `/codes/meta`、`/codes/refresh`（58 項）、`run_ui.py` 加快照行與更新按鈕與零結果提示（33 項）、
+  `run_webui.py` 加轉發與快照行（36 項）、`run_gui.py` 加快照行與警告色與語言切換（38 項）。三個界面嘅存根一律給
+  一筆**過舊且上次更新失敗**嘅快照（90,000 秒 → 「1 天前」），因為容易出事嘅係警告渲染而唔係正常路徑。
+- 測試揪出兩個真實界面缺陷（改界面而唔放寬測試）：兩個 HTML 嘅 `ageText()` 用「日前」而 GUI 語言檔用「天前」，
+  統一為「天前」；`ui.html` 嘅 `refreshCodes()` 先 `note()` 再 `loadCodes()`，更新報告即時被重讀表格嘅訊息蓋掉，
+  改為重讀後把報告還原返上去。
+- 三個 `.ui` 檔仍不含任何文字、三種語言鍵集合仍一致（新增 `symbols.codes_*` 與 `age.*` 十個鍵）。

@@ -8,6 +8,11 @@
   千分位兩位小數、按來源統計條數；
 * 券商選項只由 /capabilities 的能力聲明填充且默認 futu（不提供該品種者標註原因且不可選）、市場選項只由
   返回的 market 填充、轉類型即轉到對應接口並重設為全部市場；
+* 標的頁分上下兩表：下表為統一格式（COLUMNS），上表為該券商自帶欄位；兩者以同一接口順序取兩次（第二次帶
+  raw=1），上表的原因只寫在自己的標籤，不影響下表與狀態列；
+* 標的頁另列一行顯示離線 CODES 快照的行數與距今時間（轉發 /codes/meta，離線讀回，不需券商連線；過舊與
+  上次更新失敗以警告色而非錯誤色提示，因已存放的資料仍可用）；「更新離線 CODES」只向 /codes/refresh 送出
+  且不带市場參數（快照即全量），完成後重讀該行；切換語言時該行一併重貼，不需重新取數；
 * 閘道不可達與金鑰不正確均明確報錯（狀態列為取數失敗、原因原樣顯示）；未設 API_KEY 即拒絕建立客戶端；
 * `brokery_gui/run.py` 啟動後窗口會一直存活（頂層窗口無父，啟動腳本若不持有引用即被解構、事件循環 abort）。
 
@@ -30,6 +35,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # 離屏運行，不需�
 from PySide6 import QtWidgets  # noqa: E402
 
 from brokery.brokers.base import ACCOUNT_COLUMNS, COLUMNS  # noqa: E402
+from brokery.core import CODES_META_COLUMNS  # noqa: E402
 from brokery_gui.api import GatewayClient  # noqa: E402
 from brokery_gui.app import DesktopGui, cell_text  # noqa: E402
 from brokery_gui.i18n import LOCALE_DIR, Translator, available, load  # noqa: E402
@@ -43,22 +49,37 @@ ACCOUNT_ROWS = [
     ["ib", "U11976982", "individual", "ACTIVE", "USD",
      2000.0, 1500.0, 500.0, 1500.0, None, None, None, 2000.0, -25.0, 0.0],
 ]
+# 行必須嚴格對應 COLUMNS：不設到期月欄，券商原生標識只在 raw=1 的原生格式中出現；symbol_type
+# 與真實閘道一致為大寫常量。
 SYMBOL_ROWS = [
-    ["HK.00700", "騰訊控股", "HK", "700", "stock", "HKD", "HKEX", "", "futu", "700"],
-    ["US.NVDA", "英偉達", "US", "NVDA", "stock", "USD", "NASDAQ", "", "futu", "NVDA"],
+    ["HK.00700", "騰訊控股", "HK", "700", "STOCK", "HKD", "HKEX", "futu"],
+    ["US.NVDA", "英偉達", "US", "NVDA", "STOCK", "USD", "NASDAQ", "futu"],
 ]
+# raw=1 時閘道返回該券商自帶欄位：这里以 futu 的 basicinfo 欄位作代表，必須與 COLUMNS 完全不同。
+RAW_COLUMNS = ["code", "name", "full_name", "last_trade_time", "lot_size"]
+RAW_ROWS = [["00700", "騰訊控股", "騰訊控股股份有限公司", "2026-10-09 16:08:00", "N/A"],
+            ["NVDA", "英偉達", "NVIDIA Corporation", "2026-10-09 20:00:00", "1"]]
 # 能力聲明：ib 唔提供股票 → 該選項應標註原因且不可選（由適配器聲明，唔喺界面硬寫）。
+# 值必須與真實閘道一致：capabilities 序列化自 SymbolBroker.capabilities，即 symbol_type 的大寫常量
+# （codes.STOCK/FUTURE/INDEX）。存根若用細寫即掩蓋界面以 kind 直接比對的錯誤。
 CAPABILITIES = {
     "sources": ["futu", "ib"],
     "adapters": {
-        "futu": {"capabilities": ["stock", "future", "index"]},
-        "ib": {"capabilities": ["future", "index"]},
+        "futu": {"capabilities": ["STOCK", "FUTURE", "INDEX"]},
+        "ib": {"capabilities": ["FUTURE", "INDEX"]},
     },
 }
+# 離線 CODES 快照的元資料：一行，欄位與順序即 CODES_META_COLUMNS。刻意給一筆超過 24 小時且上次更新失敗
+# 的快照（距今 90000 秒 → 界面顯示「1 天前」），要驗的正是「過舊以警告色而非錯誤色提示」。
+CODES_META_ROWS = [["futu_codes", 38569, 8, "2026-10-10T10:00:00+00:00", 90000.0, True, "futu",
+                   "HK/US 全量 CODES", "futu: OpenD 未連接"]]
+CODES_REFRESH = {"status": True, "data": {"columns": list(CODES_META_COLUMNS), "rows": CODES_META_ROWS},
+                 "message": "ok: 已更新 38569 條 CODES（FUTURE 14079（+0），INDEX 740（+0），STOCK 23750（+0））"}
 
 
 class Stub(BaseHTTPRequestHandler):
-    """存根閘道：只提供戶口、能力與三個清單接口，並記錄收到的金鑰與完整路徑，足以核對請求口徑。"""
+    """存根閘道：只提供戶口、能力、三個清單接口與離線 CODES 的兩個接口，並記錄收到的金鑰與完整路徑，
+    足以核對請求口徑。"""
 
     hits: list[str] = []
     queries: list[str] = []
@@ -78,11 +99,18 @@ class Stub(BaseHTTPRequestHandler):
         elif path == "/capabilities":
             body, code = {"status": True, "data": CAPABILITIES, "message": "ok"}, 200
         elif path in ("/stocks", "/futures", "/indices"):
-            body, code = {"status": True, "data": {"columns": COLUMNS, "rows": SYMBOL_ROWS},
-                          "message": "ok"}, 200
+            # 同一接口按 raw 參數供兩種格式：界面必須自己各取一次，不能憑統一格式假設渲染上表。
+            data = ({"columns": RAW_COLUMNS, "rows": RAW_ROWS} if "raw=1" in self.path
+                    else {"columns": COLUMNS, "rows": SYMBOL_ROWS})
+            body, code = {"status": True, "data": data, "message": "ok"}, 200
         elif path == "/accounts":
             body, code = {"status": True, "data": {"columns": ACCOUNT_COLUMNS, "rows": ACCOUNT_ROWS},
                           "message": MESSAGE}, 200
+        elif path == "/codes/meta":
+            body, code = {"status": True, "data": {"columns": list(CODES_META_COLUMNS),
+                                                   "rows": CODES_META_ROWS}, "message": "ok"}, 200
+        elif path == "/codes/refresh":
+            body, code = CODES_REFRESH, 200
         else:
             body, code = {"detail": f"no such path: {self.path}"}, 404
         raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -180,8 +208,16 @@ def main() -> dict:
 
     gui.window.tabs.setCurrentIndex(1)
     pump(qt, gui)
-    check("進入標的頁先取能力聲明再取清單", Stub.hits[-2:] == ["/capabilities", "/stocks"],
-          ",".join(Stub.hits[-3:]))
+    # 快照狀態與清單無關（離線讀回，不需券商連線），進入該頁時兩者同時送出，順序不作要求。
+    list_hits = [h for h in Stub.hits if h != "/codes/meta"]
+    check("進入標的頁先取能力聲明，再順序取清單兩次（統一＋原始）",
+          list_hits[-3:] == ["/capabilities", "/stocks", "/stocks"], ",".join(list_hits[-4:]))
+    check("進入標的頁同時讀離線 CODES 快照狀態（不需券商連線）",
+          Stub.hits.count("/codes/meta") == 1, ",".join(Stub.hits))
+    codes_line = gui.symbols.codesLabel.text()
+    check("快照一行顯示行數與距今時間，過舊及上次更新失敗以警告色（非錯誤色）提示",
+          "38569" in codes_line and "1 天前" in codes_line and "上次更新失敗" in codes_line
+          and "b26a00" in gui.symbols.codesLabel.styleSheet(), codes_line)
     broker_combo = gui.symbols.brokerCombo
     check("券商選項由能力聲明填充，默認 futu，不提供股票者標註原因且不可選",
           broker_combo.currentData() == "futu"
@@ -189,25 +225,52 @@ def main() -> dict:
           ",".join(combo_items(broker_combo)))
     check("標的表格欄位即 COLUMNS", headers(gui.symbols.symbolsTable) == COLUMNS,
           ",".join(headers(gui.symbols.symbolsTable)[:3]))
+    check("標的頁上下兩表：上表為券商原始欄位、下表仍為 COLUMNS",
+          headers(gui.symbols.rawTable) == RAW_COLUMNS and headers(gui.symbols.symbolsTable) == COLUMNS,
+          "上=" + ",".join(headers(gui.symbols.rawTable)) + " 下=" + ",".join(headers(gui.symbols.symbolsTable)[:2]))
+    check("同一接口順序取兩次：先統一格式，再同參數 raw=1",
+          Stub.queries[-2:] == ["/stocks?broker=futu", "/stocks?broker=futu&raw=1"], ",".join(Stub.queries[-2:]))
+    check("兩表各有標題，文字由字庫按鍵取",
+          gui.symbols.rawLabel.text() == "原始格式（券商自帶欄位）" and gui.symbols.unifiedLabel.text() == "統一格式",
+          gui.symbols.rawLabel.text() + " / " + gui.symbols.unifiedLabel.text())
+    check("上表按原始欄位填充，缺失值不受下表格式影響",
+          cell(gui.symbols.rawTable, 0, 4) == "N/A" and cell(gui.symbols.rawTable, 0, 2) == "騰訊控股股份有限公司",
+          cell(gui.symbols.rawTable, 0, 4))
     check("市場選項只由返回的 market 填充",
           [gui.symbols.marketCombo.itemData(i) for i in range(gui.symbols.marketCombo.count())] == ["", "HK", "US"],
           ",".join(gui.symbols.marketCombo.itemData(i) for i in range(gui.symbols.marketCombo.count())))
     Stub.queries.clear()
     gui.symbols.marketCombo.setCurrentIndex(gui.symbols.marketCombo.findData("HK"))
     pump(qt, gui)
-    check("選市場後只向該市場再取一次", Stub.queries == ["/stocks?broker=futu&markets=HK"], ",".join(Stub.queries))
+    check("選市場後即向該市場重取兩次（統一＋原始）",
+          Stub.queries == ["/stocks?broker=futu&markets=HK", "/stocks?broker=futu&markets=HK&raw=1"],
+          ",".join(Stub.queries))
     Stub.queries.clear()
     gui.symbols.kindCombo.setCurrentIndex(gui.symbols.kindCombo.findData("index"))
     pump(qt, gui)
     check("轉類型即轉到 /indices，市場重設為全部",
-          Stub.queries == ["/indices?broker=futu"] and gui.symbols.marketCombo.currentData() == "",
-          ",".join(Stub.queries))
+          Stub.queries == ["/indices?broker=futu", "/indices?broker=futu&raw=1"]
+          and gui.symbols.marketCombo.currentData() == "", ",".join(Stub.queries))
     check("轉類型後不提供該品種的券商變為可選",
           combo_items(broker_combo) == ["futu|可選", "ib|可選"], ",".join(combo_items(broker_combo)))
     Stub.queries.clear()
     gui.symbols.fetchButton.click()
     pump(qt, gui)
-    check("「取得」按鈕會再取一次", Stub.queries == ["/indices?broker=futu"], ",".join(Stub.queries))
+    check("「取得」按鈕會再取一次（統一＋原始）",
+          Stub.queries == ["/indices?broker=futu", "/indices?broker=futu&raw=1"], ",".join(Stub.queries))
+
+    # 重拉全量並覆蓋快照：只向 /codes/refresh 送出且不带市場參數（快照即全量，只拉部分市場會被縮細防護
+    # 拒絕）；完成後必須重讀快照狀態，失敗原因亦會記進 meta，故成敗都要重讀。
+    Stub.queries.clear()
+    gui.symbols.codesRefreshButton.click()
+    pump(qt, gui)
+    check("「更新離線 CODES」只向 /codes/refresh 送出（不带市場參數）",
+          [q for q in Stub.queries if q.startswith("/codes")] == ["/codes/refresh", "/codes/meta"],
+          ",".join(Stub.queries))
+    check("更新的結果原樣顯示（含各品種增減），並重讀快照一行",
+          "已更新 38569 條 CODES" in gui.symbols.messageLabel.text()
+          and "38569" in gui.symbols.codesLabel.text()
+          and gui.symbols.codesRefreshButton.isEnabled(), gui.symbols.messageLabel.text()[:60])
 
     for language, tab0, kind0 in (("zh-Hans", "户口清单", "股票"), ("en", "Accounts", "Stocks")):
         gui.set_language(language)
@@ -215,6 +278,8 @@ def main() -> dict:
         check(f"切換語言即時生效（{language}）且不需重建窗口",
               gui.window.tabs.tabText(0) == tab0 and gui.symbols.kindCombo.itemText(0) == kind0
               and id(gui.window) == window_id, gui.window.tabs.tabText(0))
+    check("切換語言後快照一行一併重貼（重貼標籤即重繪快照狀態，不需重新取數）",
+          gui.symbols.codesLabel.text().startswith("Offline CODES"), gui.symbols.codesLabel.text())
     check("界面用到的鍵在三種語言下均無缺譯", gui.tr.missing == [], ",".join(gui.tr.missing))
 
     down = DesktopGui(GatewayClient(base_url=f"http://127.0.0.1:{free_port()}", api_key=KEY))
@@ -248,7 +313,8 @@ def main() -> dict:
         return {"status": False, "data": None, "message": "失敗：" + "；".join(failed)}
     return {"status": True, "data": None,
             "message": f"{len(checks)} 項檢查全過：.ui 不含文字、三種語言鍵集合一致且即時切換、表格欄位即欄位契約、"
-                       "缺失值破折號、券商選項由能力聲明填充、市場選項只由返回值填充、閘道不可達與金鑰不正確均明確報錯"}
+                       "缺失值破折號、券商選項由能力聲明填充、市場選項只由返回值填充、離線 CODES 快照年齡與"
+                       "更新按鈕正常、閘道不可達與金鑰不正確均明確報錯"}
 
 
 if __name__ == "__main__":

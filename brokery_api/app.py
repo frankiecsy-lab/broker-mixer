@@ -4,6 +4,9 @@
 所有接口一律返回 {"status", "data", "message"}；data 為 DataFrame 時展開為 {"columns", "rows"}（缺失值
 一律為 null），為元資料時為物件。業務失敗仍為 HTTP 200（由 status 表達），4xx 只用於請求本身不合法
 與鑑權失敗，令客戶端只需看一個欄位。
+
+連券商的取數接口一律受理 raw 查詢參數（?raw=1）：為真時 data 的欄位與值即該券商自帶的格式，信封與
+狀態口徑完全不變，故同一接口可同時供出統一格式與原始格式。
 """
 from __future__ import annotations
 
@@ -22,10 +25,17 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Security, WebSocke
 from fastapi.responses import FileResponse
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
-from brokery import Brokery, CodeError
-from brokery.brokers.base import ACCOUNT_COLUMNS, BAR_MINUTES, BROKER_COLUMNS, COLUMNS, K_COLUMNS
+from brokery import Brokery, CodeError, store
+from brokery.brokers.base import (
+    ACCOUNT_COLUMNS,
+    BAR_MINUTES,
+    BROKER_COLUMNS,
+    COLUMNS,
+    K_COLUMNS,
+    native_columns,
+)
 from brokery.config import get_settings
-from brokery.core import ACC_FILTERS
+from brokery.core import ACC_FILTERS, CODES_SOURCE, codes_max_age_seconds
 
 from . import log as api_log
 
@@ -66,6 +76,19 @@ def frame_payload(frame: pd.DataFrame) -> dict:
     return {
         "columns": [str(name) for name in frame.columns],
         "rows": [[_json_value(value) for value in row] for row in frame.itertuples(index=False)],
+    }
+
+
+def rows_payload(rows: list[dict]) -> dict:
+    """bar 字典 → {"columns": [...], "rows": [[...]]}：欄位即各行的鍵。
+
+    串流的回呼為字典而非 DataFrame（見 brokers.base 的 BarMerger/NativeBars），欄位由資料本身決定：
+    統一格式時即 K_COLUMNS，raw=True 時即該券商自帶的鍵，這裡不憑格式假設補欄位。
+    """
+    columns = native_columns(rows)
+    return {
+        "columns": columns,
+        "rows": [[_json_value(row.get(name)) for name in columns] for row in rows],
     }
 
 
@@ -113,10 +136,11 @@ class StreamWorker:
 
     def __init__(self, brokery: Brokery, logger, broker: str, codes: tuple[str, ...], ktype: str,
                  count: int, autype: str | None, seconds: float, loop: asyncio.AbstractEventLoop,
-                 queue: asyncio.Queue) -> None:
+                 queue: asyncio.Queue, *, raw: bool = False) -> None:
         self.broker, self.codes, self.ktype = broker, codes, ktype
         self._brokery, self._logger = brokery, logger
         self.count, self.autype, self.seconds = count, autype, seconds
+        self.raw = raw
         self._loop, self._queue = loop, queue
         self._ends_at = time.monotonic() + seconds
         self._stopping = False
@@ -143,6 +167,7 @@ class StreamWorker:
             result = self._brokery.stream_kline(
                 self.codes, ktype=self.ktype, count=self.count, broker=self.broker,
                 autype=self.autype, seconds=self.seconds, on_update=self._on_update,
+                raw=self.raw,
             )
         except Exception as exc:  # 串流在後台執行緒，抛出到這裡才不會靜靜消失
             result = {"status": False, "message": f"stream_failed: {type(exc).__name__}: {exc}"}
@@ -154,10 +179,37 @@ class StreamWorker:
             event = "end" if result["status"] else "error"
             self.push({"event": event, "broker": self.broker, "message": str(result["message"])})
 
-    def _on_update(self, code: str, frame: pd.DataFrame) -> None:
-        """券商推送：把該代碼目前完整的 bar 交回連接，客戶端以最新一份覆蓋整張圖。"""
+    def _on_update(self, code: str, rows: list[dict]) -> None:
+        """券商推送：把該代碼目前完整的 bar 交回連接，客戶端以最新一份覆蓋整張圖。
+
+        回呼送來的是字典列表（各券商的 BarMerger/NativeBars 即返回此形式），不是 DataFrame。
+        """
         self.push({"event": "update", "broker": self.broker, "code": code,
-                   "data": frame_payload(frame)})
+                   "data": rows_payload(rows)})
+
+
+def auto_refresh_codes(brokery: Brokery, logger) -> None:
+    """快照過舊時在背景重拉全量 CODES；未過舊或已關閉自動更新時直接返回。
+
+    只在啟動時做一次，絕不在請求內同步重拉：全量重拉實測約 6 秒，而離線讀回同一份快照只需
+    0.03 秒，把更新放進請求路徑會令第一次搜尋慢兩百倍。閘道可能在重拉完成前已關閉，屆時本次
+    更新只是失敗並記進快照的 last_refresh_error，不影響已存放的舊快照。
+    """
+    limit = codes_max_age_seconds()
+    if limit <= 0:
+        return
+    try:
+        meta = store.load_meta(store.CODES_DATASET)
+    except store.StoreError:
+        meta = {}  # 尚未有快照：視為最舊，沒有離線資料可用，必須拉一次
+    if not store.meta_stale(meta, limit):
+        return
+    result = brokery.refresh_codes()
+    line = f"CODES 自動更新 → status={bool(result['status'])} {result['message']}"
+    if result["status"]:
+        logger.info(line)
+    else:
+        logger.warning(line)
 
 
 def create_app(sources: tuple[str, ...] | None = None, autype: str | None = None,
@@ -189,6 +241,10 @@ def create_app(sources: tuple[str, ...] | None = None, autype: str | None = None
             ", ".join(sources) or "無", autype, settings.api_host, settings.api_port,
             settings.api_log_dir / api_log.LOG_FILE,
         )
+        # 快照過舊才在背景重拉：不阻塞啟動，也不放進任何請求的路徑（見 auto_refresh_codes）
+        if CODES_SOURCE in sources:
+            threading.Thread(target=auto_refresh_codes, args=(app.state.brokery, logger),
+                             name="codes-refresh", daemon=True).start()
         yield
         app.state.brokery.close()
         logger.info("關閉：已斷開所有券商連線")
@@ -331,36 +387,52 @@ def create_app(sources: tuple[str, ...] | None = None, autype: str | None = None
         """離線讀回已存放的 CODES（parquet），不需要任何券商連線。"""
         return guarded("/codes", lambda: app.state.brokery.get_code(name) if name else app.state.brokery.get_code())
 
+    @app.get("/codes/meta", dependencies=[auth])
+    def codes_meta(name: str | None = None) -> dict:
+        """CODES 快照的元資料（行數、存放時間、距今秒數、是否過舊、上次更新失敗的原因）。
+        單行 DataFrame，欄位為 core.CODES_META_COLUMNS；離線執行，不需要任何券商連線。"""
+        return guarded("/codes/meta",
+                       lambda: app.state.brokery.get_code_meta(name) if name
+                       else app.state.brokery.get_code_meta())
+
+    @app.get("/codes/refresh", dependencies=[auth])
+    def codes_refresh(markets: str | None = None, force: bool = False) -> dict:
+        """重拉全量 CODES 並更新離線快照（需券商連線，實測約 6 秒）。某品種明顯縮細時拒絕覆蓋，
+        只向快照的來源券商取（core.CODES_SOURCE），不混入其他券商的標識体系。"""
+        return guarded("/codes/refresh",
+                       lambda: app.state.brokery.refresh_codes(_split(markets) or None, force=force))
+
     @app.get("/stocks", dependencies=[auth])
-    def stocks(markets: str | None = None, broker: str | None = None) -> dict:
+    def stocks(markets: str | None = None, broker: str | None = None,
+               raw: bool = False) -> dict:
         """股票清單。markets 為逗號分隔的統一市場前綴（如 HK,US），省略時用 Brokery 的預設；
         broker 只向該券商取，未啟用或不提供該品種時明確報錯。"""
         return guarded("/stocks", lambda: app.state.brokery.list_stocks(
-            _split(markets) or None, broker=broker
+            _split(markets) or None, broker=broker, raw=raw
         ))
 
     @app.get("/futures", dependencies=[auth])
     def futures(roots: str | None = None, markets: str | None = None,
-                broker: str | None = None) -> dict:
+                broker: str | None = None, raw: bool = False) -> dict:
         """期貨清單（含主連與各到期月）。roots 為逗號分隔的期貨 root（如 ES,HNQ）；
-        markets 按返回行的市場過濾（期貨接口本身沒有市場參數）。"""
+        markets 只取屬於該市場的合約（期貨接口本身沒有市場參數，故由 Brokery 按市場篩掉種子）。"""
         return guarded("/futures", lambda: app.state.brokery.list_futures(
-            _split(roots) or None, markets=_split(markets) or None, broker=broker
+            _split(roots) or None, markets=_split(markets) or None, broker=broker, raw=raw
         ))
 
     @app.get("/indices", dependencies=[auth])
     def indices(symbols: str | None = None, markets: str | None = None,
-                broker: str | None = None) -> dict:
+                broker: str | None = None, raw: bool = False) -> dict:
         """指數清單。symbols 為逗號分隔的指數符號；markets 的處理同期貨清單。"""
         return guarded("/indices", lambda: app.state.brokery.list_indices(
-            _split(symbols) or None, markets=_split(markets) or None, broker=broker
+            _split(symbols) or None, markets=_split(markets) or None, broker=broker, raw=raw
         ))
 
     @app.get("/all", dependencies=[auth])
-    def all_codes(markets: str | None = None) -> dict:
+    def all_codes(markets: str | None = None, raw: bool = False) -> dict:
         """一次取得股票、期貨與指數。"""
         return guarded("/all", lambda: app.state.brokery.list_all(
-            markets if markets is None else _split(markets)
+            markets if markets is None else _split(markets), raw=raw
         ))
 
     @app.get("/convert", dependencies=[auth])
@@ -372,18 +444,21 @@ def create_app(sources: tuple[str, ...] | None = None, autype: str | None = None
 
     @app.get("/kline", dependencies=[auth])
     def kline(code: str, ktype: str = "day", count: int = 60, broker: str = "futu",
-              autype: str | None = None) -> dict:
-        """K 線，欄位固定為 K_COLUMNS。autype 省略時用 API_AUTYPE；不支持的複權或品種由 Brokery
-        明確返回 status=False，不會靜靜改用另一種價格。"""
+              autype: str | None = None, raw: bool = False) -> dict:
+        """K 線，欄位固定為 K_COLUMNS（raw=True 時為該券商 bar 的原生欄位）。autype 省略時用
+        API_AUTYPE；不支持的複權或品種由 Brokery 明確返回 status=False，不會靜靜改用另一種價格。"""
         return guarded("/kline", lambda: app.state.brokery.get_kline(
-            code, ktype=ktype, count=count, broker=broker, autype=autype
+            code, ktype=ktype, count=count, broker=broker, autype=autype, raw=raw
         ))
 
     @app.get("/accounts", dependencies=[auth])
-    def accounts(broker: str | None = None, acc_type: str = "all", currency: str | None = None) -> dict:
-        """戶口與資金，欄位固定為 ACCOUNT_COLUMNS；一律只列真實且已啟用的戶口。"""
+    def accounts(broker: str | None = None, acc_type: str = "all", currency: str | None = None,
+                 raw: bool = False) -> dict:
+        """戶口與資金，欄位固定為 ACCOUNT_COLUMNS（raw=True 時為各券商戶口的原生記錄）；一律只列
+        真實且已啟用的戶口。raw=True 時不可按 acc_type 過濾（原生記錄沒有該欄位），由 Brokery 明確
+        返回 status=False。"""
         return guarded("/accounts", lambda: app.state.brokery.get_accounts(
-            broker=broker, acc_type=acc_type, currency=currency
+            broker=broker, acc_type=acc_type, currency=currency, raw=raw
         ))
 
     # ---------- 串流 ----------
@@ -396,8 +471,9 @@ def create_app(sources: tuple[str, ...] | None = None, autype: str | None = None
     @app.websocket("/stream")
     async def stream(ws: WebSocket) -> None:
         """K 線串流（WebSocket）。客戶端送 {"action":"subscribe","codes":[…],"ktype":…,"count":…,
-        "broker":…,"autype":…,"seconds":…} 開始，{"action":"stop"} 結束；服务端返回
-        {"event":"subscribed"|"update"|"closed"|"end"|"error"}。
+        "broker":…,"autype":…,"seconds":…,"raw":…} 開始，{"action":"stop"} 結束；服务端返回
+        {"event":"subscribed"|"update"|"closed"|"end"|"error"}。raw 為真時每次 update 的欄位即該
+        券商 bar 的原生欄位（取數與推送語義不變）。
 
         歷史起點由 /kline 取，本處只推更新，每次 update 帶該代碼目前完整的 bar，客戶端整份覆蓋即可，
         不需要自己合併。ktype、autype 與代碼是否支持一律由 Brokery 判定，失敗以 error 事件原樣返回，
@@ -455,7 +531,7 @@ def create_app(sources: tuple[str, ...] | None = None, autype: str | None = None
                 worker = StreamWorker(
                     app.state.brokery, logger, broker, codes, str(action.get("ktype", "1m")),
                     count, action.get("autype"), min(seconds, settings.api_stream_seconds),
-                    loop, queue,
+                    loop, queue, raw=bool(action.get("raw", False)),
                 )
                 worker.on_done = lambda worker=worker: release(broker, worker)
                 app.state.streams[broker] = worker

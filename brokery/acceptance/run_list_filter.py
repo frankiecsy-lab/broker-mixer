@@ -7,7 +7,9 @@
 * 省略 markets 即用 DEFAULT_STOCK_MARKETS，把 None 傳進去也不會炸（曾經 list_stocks(None) 拋 TypeError，
   令控制台「標的清單全部取不到、一直讀取中」）；
 * 取到了但全部不在指定市場即 empty_list，不以空表冒充成功；
-* 一家拋異常時仍返回別家已取得的資料，並在 message 點名失敗的一家。
+* 一家拋異常時仍返回別家已取得的資料，並在 message 點名失敗的一家；
+* raw=True 時同一個 markets 參數只改變欄位與格式：原生行沒有 market 欄位，故不按行過濾（否則一律被丟掉、
+  誤判 empty_list），市場範圍一律由市場參數／種子保證，取數範圍不變。
 
 以進程內存根券商進行，不需要任何連線，任何環境都能重複執行；四家真實券商的格式與能力邊界由
 run_list_symbols.py 驗收。
@@ -42,18 +44,24 @@ class Stub(SymbolBroker):
 
     def row(self, market: str, symbol: str, symbol_type: str) -> dict:
         return self.make_row(f"{market}.{symbol}", f"{self.source} {symbol}", market, symbol,
-                             symbol_type, "USD", "TEST", "", symbol)
+                             symbol_type, "USD", "TEST")
 
-    def list_stocks(self, markets):
+    def list_stocks(self, markets, *, raw=False):
         self.seen.append(("stocks", tuple(markets)))
+        if raw:  # 原生行沒有 market 欄位：市場範圍由參數交給適配器自己保證
+            return [{"symbol": f"S{market}", "full_name": f"{self.source} S{market}"} for market in markets]
         return [self.row(market, f"S{market}", STOCK) for market in markets]
 
-    def list_futures(self, seeds):
+    def list_futures(self, seeds, *, raw=False):
         self.seen.append(("futures", tuple(seeds)))
+        if raw:  # 原生行只有種子所屬市場的標記，沒有統一的 market 欄位
+            return [{"seed_market": seed.market, "exchange": "TEST"} for seed in seeds]
         return [self.row("US", "ES", FUTURE), self.row("SG", "CN", FUTURE)]
 
-    def list_indices(self, seeds):
+    def list_indices(self, seeds, *, raw=False):
         self.seen.append(("indices", tuple(seeds)))
+        if raw:
+            return [{"seed_market": seed.market, "exchange": "TEST"} for seed in seeds]
         return [self.row("US", "SPX", INDEX), self.row("HK", "HSI", INDEX)]
 
 
@@ -65,7 +73,7 @@ class NoStock(Stub):
 class Broken(Stub):
     source = "broken"
 
-    def list_indices(self, seeds):
+    def list_indices(self, seeds, *, raw=False):
         self.seen.append(("indices", tuple(seeds)))
         raise ConnectionError("存根取不到")
 
@@ -121,6 +129,31 @@ def main() -> dict:
                   not empty["status"] and empty["message"].startswith("empty_list") and "ZZ" in empty["message"],
                   empty["message"])
 
+            # raw=True：原生行沒有 market 欄位，故不得按行過濾（否則一律被丟掉、誤判 empty_list）；
+            # 市場範圍一律由參數/種子保證，取數範圍不變。
+            raw_stocks = b.list_stocks(("HK",), broker="stuball", raw=True)
+            check("股票清單 raw：市場仍由參數交給適配器，欄位為原生鍵且不做行過濾",
+                  raw_stocks["status"] and all_stub.seen[-1] == ("stocks", ("HK",))
+                  and list(raw_stocks["data"].columns) == ["symbol", "full_name"]
+                  and list(raw_stocks["data"]["symbol"]) == ["SHK"],
+                  f"{all_stub.seen[-1]} {list(raw_stocks['data'].columns)} {raw_stocks['message']}")
+            raw_indices = b.list_indices(markets=("US",), broker="stuball", raw=True)
+            check("指數清單 raw：市場範圍由種子保證（不做行過濾，故不會誤判 empty_list）",
+                  raw_indices["status"] and list(raw_indices["data"].columns) == ["seed_market", "exchange"]
+                  and set(raw_indices["data"]["seed_market"]) == {"US"},
+                  f"{list(raw_indices['data'].columns)} "
+                  f"{sorted(set(raw_indices['data']['seed_market']))} {raw_indices['message']}")
+            raw_futures = b.list_futures(("ES",), markets=("US",), broker="stuball", raw=True)
+            check("期貨清單 raw：不請求的市場根本不發出請求（範圍由種子保證）",
+                  raw_futures["status"]
+                  and all(seed.market == "US" for seed in all_stub.seen[-1][1])
+                  and set(raw_futures["data"]["seed_market"]) == {"US"},
+                  f"種子={[s.market for s in all_stub.seen[-1][1]]} {raw_futures['message']}")
+            check("省略 markets 時 raw 仍用預設市場",
+                  b.list_stocks(broker="stuball", raw=True)["status"]
+                  and all_stub.seen[-1] == ("stocks", core.DEFAULT_STOCK_MARKETS),
+                  f"{all_stub.seen[-1]}")
+
             both = b.list_futures(("ES",), markets=("US",), broker="stuball")
             check("broker 與 markets 同時指定：只向該家取，再按市場過濾",
                   both["status"] and set(both["data"]["source"]) == {"stuball"}
@@ -143,7 +176,8 @@ def main() -> dict:
         return {"status": False, "data": pd.DataFrame(), "message": "失敗：" + "；".join(failed)}
     return {"status": True, "data": pd.DataFrame(),
             "message": f"{len(checks)} 項檢查全過：broker 能力閘（unknown_source／type_unsupported）、"
-                       "markets 按行過濾（empty_list）、省略 markets 用預設市場、一家失敗仍返回別家資料"}
+                       "markets 按行過濾（empty_list）、省略 markets 用預設市場、一家失敗仍返回別家資料、"
+                       "raw 時市場範圍由參數／種子保證（不做行過濾）"}
 
 
 if __name__ == "__main__":

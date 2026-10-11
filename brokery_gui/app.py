@@ -3,9 +3,12 @@
 界面與文字分離：.ui 檔內不寫任何文字，顯示文字一律由 i18n 按鍵取，故切換語言只重貼標籤，不需重建窗口。
 表格欄位直接取自返回的 columns（即 core 的欄位契約），這裡不另定義欄位順序，也不重新解讀或湊數。
 取數在背景執行緒進行：IB 連線可達 40s，界面若同步等待即凍結。
+標的頁分上下兩表：上表為該券商自帶的欄位與格式（同參數再取一次 raw=1），下表為統一格式。兩次取數必須順序，
+同一券商的連線（IB 一條 socket、futu 一個 OpenD context）不接受並行請求。
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from PySide6 import QtCore, QtWidgets
@@ -18,6 +21,9 @@ UI_DIR = Path(__file__).with_name("ui")
 # 「類型」選項 → 閘道的清單接口。只有這三項，其餘一律 unknown_kind，不猜用戶想要什麼。
 SYMBOL_PATHS = {"stock": "/stocks", "future": "/futures", "index": "/indices"}
 KINDS = tuple(SYMBOL_PATHS)
+# 能力聲明以 symbol_type 的大寫常量表達（見 brokers/codes.py），與界面用的 kind 值大小寫不同，
+# 故必須顯式對應；以 kind 直接比對 capabilities 會永遠不成立，所有券商都被視為不可選。
+KIND_CAPABILITIES = {"stock": "STOCK", "future": "FUTURE", "index": "INDEX"}
 DEFAULT_BROKER = "futu"
 DASH = "—"
 # 資金欄位按數值顯示（千分位與兩位小數）；其餘欄位一律按原樣文字顯示。
@@ -100,8 +106,10 @@ class DesktopGui:
         self.window.tabs.addTab(self.accounts, "")
         self.window.tabs.addTab(self.symbols, "")
         self._jobs: set = set()
+        self._symbols_seq = 0
         self.broker_caps: dict[str, list[str]] = {}
         self.seen_markets: set[str] = set()
+        self.codes_snapshot: dict | None = None   # 離線 CODES 快照的元資料行；未讀到即為 None
         self._fill_combos()
         self._retranslate()
         self._connect()
@@ -137,7 +145,11 @@ class DesktopGui:
         for label, key in ((self.symbols.kindLabel, "symbols.kind"), (self.symbols.marketLabel, "symbols.market"),
                            (self.symbols.brokerLabel, "symbols.broker")):
             label.setText(t(key))
+        self.symbols.rawLabel.setText(t("symbols.raw_title"))
+        self.symbols.unifiedLabel.setText(t("symbols.unified_title"))
         self.symbols.fetchButton.setText(t("symbols.fetch"))
+        self.symbols.codesRefreshButton.setText(t("symbols.codes_refresh"))
+        self.render_codes_state()
         combo = self.symbols.kindCombo
         for i in range(combo.count()):
             combo.setItemText(i, t(f"kind.{combo.itemData(i)}"))
@@ -151,6 +163,7 @@ class DesktopGui:
         self.symbols.kindCombo.currentIndexChanged.connect(self._on_kind)
         self.symbols.marketCombo.currentIndexChanged.connect(self.request_symbols)
         self.symbols.brokerCombo.currentIndexChanged.connect(self.request_symbols)
+        self.symbols.codesRefreshButton.clicked.connect(self.request_codes_refresh)
         self._on_tab(self.window.tabs.currentIndex())
 
     def _on_language(self, index: int) -> None:
@@ -161,6 +174,8 @@ class DesktopGui:
             self.request_accounts()
         elif index == 1:
             self.request_capabilities()
+            # 快照狀態與清單無關（離線讀回，不需券商連線），故同時取，不等清單完成才顯示。
+            self.request_codes_meta()
 
     def _on_kind(self, _index: int) -> None:
         """轉類型時清空市場選項：各品種返回的市場不同，留著上一品種的市場只會白得一個 empty_list。"""
@@ -232,17 +247,18 @@ class DesktopGui:
         """不提供所選品種的券商標註原因並設為不可選，而不是讓用戶按了才知道會報 type_unsupported。"""
         combo = self.symbols.brokerCombo
         kind = self.symbols.kindCombo.currentData()
+        capability = KIND_CAPABILITIES.get(kind, "")
         current = combo.currentData()
         combo.blockSignals(True)
         combo.clear()
         for name, caps in self.broker_caps.items():
-            supported = kind in caps
+            supported = capability in caps
             label = (self.tr.t("symbols.broker_option", source=name) if supported else
                      self.tr.t("symbols.broker_unsupported", source=name, types=self.tr.t(f"kind.{kind}")))
             combo.addItem(label, name)
             combo.model().item(combo.count() - 1).setEnabled(supported)
-        preferred = next((name for name in (current, DEFAULT_BROKER) if kind in self.broker_caps.get(name, [])),
-                         next((n for n, c in self.broker_caps.items() if kind in c), None))
+        preferred = next((name for name in (current, DEFAULT_BROKER) if capability in self.broker_caps.get(name, [])),
+                         next((n for n, c in self.broker_caps.items() if capability in c), None))
         index = combo.findData(preferred)
         if index >= 0:
             combo.setCurrentIndex(index)
@@ -268,9 +284,15 @@ class DesktopGui:
         if market:
             params["markets"] = market
         self.set_status(self.tr.t("status.loading"), "")
-        self._request(SYMBOL_PATHS[kind], params, self.show_symbols)
+        # 轉類型／市場／券商即作廢上一輪：晚到的舊回應不得覆蓋當前兩張表。
+        self._symbols_seq += 1
+        seq = self._symbols_seq
+        path = SYMBOL_PATHS[kind]
+        self._request(path, params, lambda envelope: self.show_symbols(envelope, path, params, seq))
 
-    def show_symbols(self, envelope: dict) -> None:
+    def show_symbols(self, envelope: dict, path: str, params: dict, seq: int) -> None:
+        if seq != self._symbols_seq:
+            return
         data = envelope.get("data") or {"columns": [], "rows": []}
         fill_table(self.symbols.symbolsTable, data)
         columns = list(data.get("columns") or [])
@@ -282,3 +304,73 @@ class DesktopGui:
         if envelope.get("status") and not (data.get("rows") or []):
             envelope = {**envelope, "message": self.tr.t("symbols.no_rows")}
         self._report(envelope, self.symbols.messageLabel)
+        # 下表完成後才取上表：兩次同參數，只差 raw=1，且必須順序而非並行。
+        self._request(path, {**params, "raw": "1"}, lambda raw: self.show_raw_symbols(raw, seq))
+
+    def show_raw_symbols(self, envelope: dict, seq: int) -> None:
+        """上表：欄位與值一律按該券商返回的原樣填充。原因只寫在本表的標籤，不影響下表與狀態列。"""
+        if seq != self._symbols_seq:
+            return
+        fill_table(self.symbols.rawTable, envelope.get("data") or {"columns": [], "rows": []})
+        message = str(envelope.get("message") or "")
+        self.symbols.rawMessageLabel.setText(message)
+        self.symbols.rawMessageLabel.setStyleSheet(
+            COLOR_ERROR if not envelope.get("status") else (COLOR_WARN if message else ""))
+
+    # ------------------------------------------------------------ 離線 CODES 快照
+    def request_codes_meta(self) -> None:
+        """讀回離線 CODES 快照的元資料（行數、距今時間、是否過舊、上次更新失敗的原因）。
+        閘道離線讀取，不需要任何券商連線，故與清單請求互不影響。"""
+        self._request("/codes/meta", None, self.show_codes_meta)
+
+    def show_codes_meta(self, envelope: dict) -> None:
+        if not envelope.get("status"):
+            self.codes_snapshot = None
+            self.symbols.codesLabel.setText(
+                self.tr.t("symbols.codes_error", detail=str(envelope.get("message") or "")))
+            self.symbols.codesLabel.setStyleSheet(COLOR_ERROR)
+            return
+        data = envelope.get("data") or {}
+        self.codes_snapshot = dict(zip(list(data.get("columns") or []), (data.get("rows") or [[]])[0]))
+        self.render_codes_state()
+
+    def render_codes_state(self) -> None:
+        """快照狀態一行：行數與距今時間。過舊或上次更新失敗以警告色提示——快照往往是唯一的離線副本，
+        過舊時會查唔到新上市的代碼，但已存放的資料仍然可用，故不是失敗。"""
+        if not self.codes_snapshot:
+            return
+        text = self.tr.t("symbols.codes_state", count=self.codes_snapshot.get("rows", 0),
+                         age=self._age_text(self.codes_snapshot.get("age_seconds")))
+        if self.codes_snapshot.get("last_refresh_error"):
+            text += self.tr.t("symbols.codes_last_error")
+        self.symbols.codesLabel.setText(text)
+        self.symbols.codesLabel.setStyleSheet(
+            COLOR_WARN if self.codes_snapshot.get("stale") or self.codes_snapshot.get("last_refresh_error") else "")
+
+    def _age_text(self, seconds) -> str:
+        """距今時間以「N 小時前」這類粗粒度顯示：用戶要判斷的是「幾時更新過」，不是精確秒數。
+        無存放時間（含缺失或不可解析）一律明說，不湊成「剛剛」。"""
+        try:
+            seconds = float(seconds)
+        except (TypeError, ValueError):
+            return self.tr.t("age.unknown")
+        if not math.isfinite(seconds):
+            return self.tr.t("age.unknown")
+        for key, size in (("age.days", 86400), ("age.hours", 3600), ("age.minutes", 60)):
+            if seconds >= size:
+                return self.tr.t(key, count=int(seconds // size))
+        return self.tr.t("age.just_now")
+
+    def request_codes_refresh(self) -> None:
+        """重拉全量 CODES 並覆蓋離線快照（需券商連線，實測約數秒）。不帶市場參數：快照就是全量，
+        只拉部分市場會被閘道的縮細防護拒絕。"""
+        self.set_status(self.tr.t("status.loading"), "")
+        self.symbols.codesRefreshButton.setEnabled(False)   # 重拉需數秒，期間不可重覆送出
+        self.symbols.codesLabel.setText(self.tr.t("symbols.codes_refreshing"))
+        self._request("/codes/refresh", None, self.show_codes_refresh)
+
+    def show_codes_refresh(self, envelope: dict) -> None:
+        self.symbols.codesRefreshButton.setEnabled(True)
+        self._report(envelope, self.symbols.messageLabel)   # 拒絕覆蓋等原因原樣顯示，不掩飾
+        # 成敗都要重讀快照狀態：失敗原因會記進 meta，成功時距今時間即變為「剛剛」。
+        self.request_codes_meta()

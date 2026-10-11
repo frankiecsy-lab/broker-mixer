@@ -100,4 +100,16 @@ def create_app(base_url: str | None = None, api_key: str | None = None) -> FastA
             params["markets"] = market
         return forward(path, params)
 
+    @app.get("/api/codes/meta")
+    def codes_meta() -> dict:
+        """離線 CODES 快照的元資料（行數、存放時間、距今秒數、是否過舊）：轉發閘道 /codes/meta，
+        離線執行，不需要任何券商連線。"""
+        return forward("/codes/meta")
+
+    @app.get("/api/codes/refresh")
+    def codes_refresh() -> dict:
+        """重拉全量 CODES 並覆蓋離線快照：轉發閘道 /codes/refresh。不带市場參數——快照本身就是全量，
+        只拉部分市場會被閘道的縮細防護拒絕。"""
+        return forward("/codes/refresh")
+
     return app

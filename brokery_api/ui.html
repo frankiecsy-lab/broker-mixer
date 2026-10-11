@@ -110,9 +110,11 @@
     <button data-list="indices">指數清單</button>
     <button data-list="all">全部</button>
     <button data-list="codes">離線 CODES</button>
+    <button id="c-refresh" title="重拉全量 CODES 並覆蓋離線快照（需券商連線，約數秒）">更新 CODES</button>
     <div><label>市場</label><input id="c-markets" value="HK,US" size="10"></div>
     <div><label>篩選</label><input id="c-filter" size="16" placeholder="代碼或名稱"></div>
     <span id="c-count" class="msg"></span>
+    <span id="c-snapshot" class="msg"></span>
   </div>
   <!-- 即時清單按來源分四區，每區只放該家返回的行。 -->
   <div id="c-panels" class="panels"></div>
@@ -358,6 +360,43 @@ function buildPanels() {
     <div class="scroll"></div></div>`).join('');
 }
 
+// 離線快照的年齡：由 /codes/meta 離線讀回，不需要任何券商連線。快照往往是唯一的離線副本，過舊時
+// 搜尋會查唔到新上市的代碼，所以零結果要一併提示可以撳「更新 CODES」。
+let snapshot = null;
+
+function ageText(seconds) {
+  if (!Number.isFinite(seconds)) return '無存放時間';
+  for (const [unit, size] of [['天', 86400], ['小時', 3600], ['分鐘', 60]]) {
+    if (seconds >= size) return `${Math.floor(seconds / size)} ${unit}前`;
+  }
+  return '剛剛';
+}
+
+async function loadSnapshotMeta() {
+  const body = await api('/codes/meta');
+  const el = $('c-snapshot');
+  if (!body.status) { snapshot = null; el.textContent = ''; el.className = 'msg'; return; }
+  const cols = body.data.columns || [], row = (body.data.rows || [])[0] || [];
+  snapshot = Object.fromEntries(cols.map((c, i) => [c, row[i]]));
+  el.textContent = `快照 ${snapshot.rows} 條 · ${ageText(snapshot.age_seconds)}`
+    + (snapshot.last_refresh_error ? ' · 上次更新失敗' : '');
+  el.className = 'msg' + (snapshot.stale || snapshot.last_refresh_error ? ' warn' : '');
+}
+
+// 重拉全量並覆蓋快照（需券商連線，實測約數秒）。不帶 markets：快照就係全量，跟著篩選框的市场只會
+// 令一次更新只拉到部分市場，反而被後端的縮細防護拒絕。
+async function refreshCodes() {
+  loading('c-msg', '更新 CODES 中…（需券商連線，約數秒）');
+  const body = await withBusy($('c-refresh'), () => api('/codes/refresh'));
+  note('c-msg', body);
+  // 失敗時也要重讀元資料，先至見到記低咗嘅失敗原因。
+  if (!body.status) { await loadSnapshotMeta(); return; }
+  await loadCodes('codes');
+  // loadCodes 會以重讀表格的訊息覆蓋訊息位，但更新結果（含各品種增減與沿用舊快照的說明）先至係用戶撳
+  // 「更新 CODES」想睇嘅嘢，故重讀完成後把該結果還原返上去。
+  note('c-msg', body);
+}
+
 async function loadCodes(path) {
   state.list = path;
   const split = path !== 'codes' && !!state.caps;
@@ -373,12 +412,19 @@ async function loadCodes(path) {
   note('c-msg', body);
   state.cols = body.data.columns || [];
   state.rows = body.data.rows || [];
+  // 先取快照年齡：零結果時 filterCodes 要用到佣判是否該提示撳「更新 CODES」。
+  if (path === 'codes') await loadSnapshotMeta();
   filterCodes();
 }
 function filterCodes() {
   const text = $('c-filter').value.trim().toLowerCase();
   const shown = text ? state.rows.filter((r) => r.some((v) => String(v || '').toLowerCase().includes(text))) : state.rows;
-  $('c-count').textContent = `${shown.length} / ${state.rows.length} 條`;
+  let count = `${shown.length} / ${state.rows.length} 條`;
+  // 查唔到往往只係快照冇咗新上市的代碼，而唔係真係冇呢隻：過舊時直接講下一步做乜。
+  if (text && !shown.length && state.list === 'codes' && snapshot && snapshot.stale) {
+    count += '：無匹配；快照已過舊，可按「更新 CODES」重拉';
+  }
+  $('c-count').textContent = count;
   const partitioned = !!state.list && state.list !== 'codes' && !!state.caps;
   renderRaw(partitioned ? [] : shown);
   if (!partitioned) return;  // 離線 CODES 唔涉及即時取數，故唔分區
@@ -475,6 +521,7 @@ $('k-stream').addEventListener('click', () => (state.ws ? stopStream() : startSt
 $('a-load').addEventListener('click', loadAccounts);
 $('l-load').addEventListener('click', loadLogs);
 $('c-filter').addEventListener('input', filterCodes);
+$('c-refresh').addEventListener('click', refreshCodes);
 document.querySelectorAll('[data-list]').forEach((b) => b.addEventListener('click', () => loadCodes(b.dataset.list)));
 window.addEventListener('resize', () => state.chart && state.chart.resize());
 setInterval(() => { if ($('l-auto').checked && document.querySelector('#tab-logs.active')) loadLogs(); }, 3000);

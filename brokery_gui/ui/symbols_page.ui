@@ -42,6 +42,64 @@
     </layout>
    </item>
    <item>
+    <layout class="QHBoxLayout" name="codesLayout">
+     <item>
+      <widget class="QLabel" name="codesLabel">
+       <property name="wordWrap">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="codesRefreshButton"/>
+     </item>
+     <item>
+      <spacer name="codesSpacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="rawTitleLayout">
+     <item>
+      <widget class="QLabel" name="rawLabel"/>
+     </item>
+     <item>
+      <widget class="QLabel" name="rawMessageLabel">
+       <property name="wordWrap">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QTableWidget" name="rawTable">
+     <property name="editTriggers">
+      <set>QAbstractItemView::NoEditTriggers</set>
+     </property>
+     <property name="selectionBehavior">
+      <enum>QAbstractItemView::SelectRows</enum>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="unifiedTitleLayout">
+     <item>
+      <widget class="QLabel" name="unifiedLabel"/>
+     </item>
+    </layout>
+   </item>
+   <item>
     <widget class="QTableWidget" name="symbolsTable">
      <property name="editTriggers">
       <set>QAbstractItemView::NoEditTriggers</set>

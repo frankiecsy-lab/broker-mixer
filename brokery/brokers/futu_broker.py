@@ -6,7 +6,8 @@
 
 富途同時提供期貨與指數清單（FUTURE/IDX 類型），故三類能力均在此聲明。富途的期貨主連以
 `main` 後綴表示（如 US.10Ymain，另有 current/next/day 變體），與本專案的主連約定一致；但
-個月份用富途原生代碼（如 US.10Y2609），與 IB 的 root+到期月不同，跨券商對映仍須經 IB。
+個月份用富途原生代碼（如 US.10Y2609）。統一格式不設到期月欄，各月份一律由符號唯一標識（IB／
+Tiger／Webull 亦寫成 root+到期月），但各家的產品代碼與月份寫法仍不相同，跨券商對映仍須經 IB。
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ from .base import (
     CAP_INDEX,
     CAP_STOCK,
     BarMerger,
+    NativeBars,
     SymbolBroker,
     account_row,
     align_ts,
@@ -86,6 +88,22 @@ def _account_currency(acc: dict) -> str:
     raise ValueError(f"currency_undetermined: 戶口 {acc.get('acc_id')} 無授權市場，請傳 currency")
 
 
+def _funds_of(item: dict, ccy: str) -> dict:
+    """accinfo_query 的原生欄位 → 統一金額欄位。富途的總資產即淨資產值。"""
+    return {
+        "currency": str(item.get("currency") or ccy),
+        "net_liquidation": item.get("total_assets"),
+        "cash": item.get("cash"),
+        "market_value": item.get("market_val"),
+        "available_funds": item.get("available_funds"),
+        "buying_power": item.get("power"),
+        "init_margin": item.get("initial_margin"),
+        "maint_margin": item.get("maintenance_margin"),
+        "unrealized_pnl": item.get("unrealized_pl"),
+        "realized_pnl": item.get("realized_pl"),
+    }
+
+
 class FutuBroker(SymbolBroker):
     """富途 OpenAPI 標的來源。"""
 
@@ -121,30 +139,32 @@ class FutuBroker(SymbolBroker):
 
     # ---------- 清單 ----------
 
-    def list_stocks(self, markets: Iterable[str]) -> list[dict]:
-        """全市場股票與 ETF。markets 為統一市場前綴。"""
-        return self._codes(tuple(m.upper() for m in markets), STOCK_TYPES)
+    def list_stocks(self, markets: Iterable[str], *, raw: bool = False) -> list[dict]:
+        """全市場股票與 ETF。markets 為統一市場前綴；raw 見 _codes。"""
+        return self._codes(tuple(m.upper() for m in markets), STOCK_TYPES, raw=raw)
 
-    def list_futures(self, seeds: Iterable) -> list[dict]:
+    def list_futures(self, seeds: Iterable, *, raw: bool = False) -> list[dict]:
         """按種子所涉市場列出全部期貨。
 
         富途按市場一次列舉，不認產品 root，故 seeds 只用於決定要訪問哪些市場。主連以
         `main`/`current`/`next`/`day` 後綴表示，個月份則為富途原生代碼。
         """
-        return self._codes({seed.market.upper() for seed in seeds}, FUTURE_TYPES)
+        return self._codes({seed.market.upper() for seed in seeds}, FUTURE_TYPES, raw=raw)
 
-    def list_indices(self, seeds: Iterable) -> list[dict]:
+    def list_indices(self, seeds: Iterable, *, raw: bool = False) -> list[dict]:
         """按種子所涉市場列出全部指數。"""
-        return self._codes({seed.market.upper() for seed in seeds}, INDEX_TYPES)
+        return self._codes({seed.market.upper() for seed in seeds}, INDEX_TYPES, raw=raw)
 
     # ---------- K 線 ----------
 
-    def get_kline(self, code: str, ktype: str, count: int, autype: str) -> list[dict]:
+    def get_kline(self, code: str, ktype: str, count: int, autype: str, *, raw: bool = False) -> list[dict]:
         """按 bar 數取 K 線，返回按 ts 升序的最近 count 根。
 
         ≤1000 根用 get_cur_kline（富途原生的 bar 數接口，需先訂閱同類型 K 線）；此版本的
         get_cur_kline 無分頁參數，故更多時改用 request_history_kline，按日期範圍多取再分頁，
         最後截尾。bar 時間為交易所當地時間，統一換算成 UTC 秒以便與其它券商對齊。
+        raw=True 時列為 get_cur_kline/request_history_kline 的原生欄位，排序與截尾改按原生
+        time_key（同一格式的時間文字，升序即時間升序），取數範圍不變。
         """
         if ktype not in FUTU_KTYPE:
             raise CodeError(f"ktype_unsupported: {ktype}（可用：{'/'.join(FUTU_KTYPE)}）")
@@ -154,22 +174,24 @@ class FutuBroker(SymbolBroker):
         self.connect()
 
         if count <= FUTU_PAGE_MAX:
-            rows = self._kline_recent(code, market, ktype, count, autype)
+            rows = self._kline_recent(code, market, ktype, count, autype, raw=raw)
         else:
-            rows = self._kline_history(code, market, ktype, count, autype)
-        rows.sort(key=lambda row: row["ts"])
+            rows = self._kline_history(code, market, ktype, count, autype, raw=raw)
+        rows.sort(key=lambda row: str(row.get("time_key", "")) if raw else row["ts"])
         return rows[-count:]
 
-    def _kline_recent(self, code: str, market: str, ktype: str, count: int, autype: str) -> list[dict]:
+    def _kline_recent(self, code: str, market: str, ktype: str, count: int, autype: str,
+                      raw: bool = False) -> list[dict]:
         ret, err = self._ctx.subscribe([code], [getattr(futu.SubType, FUTU_KTYPE[ktype])])
         if ret != 0:
             raise RuntimeError(f"upstream_error: subscribe {code} 失敗: {err}")
         ret, df = self._ctx.get_cur_kline(code, count, ktype=FUTU_KTYPE[ktype], autype=FUTU_AUTYPE[autype])
         if ret != 0:
             raise RuntimeError(f"upstream_error: get_cur_kline {code} 失敗: {df}")
-        return self._kline_rows(code, market, ktype, df)
+        return self._kline_rows(code, market, ktype, df, raw=raw)
 
-    def _kline_history(self, code: str, market: str, ktype: str, count: int, autype: str) -> list[dict]:
+    def _kline_history(self, code: str, market: str, ktype: str, count: int, autype: str,
+                       raw: bool = False) -> list[dict]:
         start = date.today() - timedelta(days=span_days(ktype, count))
         rows: list[dict] = []
         page = None
@@ -187,12 +209,14 @@ class FutuBroker(SymbolBroker):
                 raise RuntimeError(f"upstream_error: request_history_kline {code} 失敗: {df}")
             if df is None or df.empty:
                 break
-            rows.extend(self._kline_rows(code, market, ktype, df))
+            rows.extend(self._kline_rows(code, market, ktype, df, raw=raw))
             if not page:
                 break
         return rows
 
-    def _kline_rows(self, code: str, market: str, ktype: str, df) -> list[dict]:
+    def _kline_rows(self, code: str, market: str, ktype: str, df, raw: bool = False) -> list[dict]:
+        if raw:
+            return df.to_dict("records")
         return [self._to_kline_row(code, market, ktype, item) for item in df.itertuples()]
 
     def _to_kline_row(self, code: str, market: str, ktype: str, item) -> dict:
@@ -220,12 +244,15 @@ class FutuBroker(SymbolBroker):
         autype: str,
         seconds: float,
         on_update,
+        *,
+        raw: bool = False,
     ) -> dict[str, list[dict]]:
         """串流多個代碼的最新 K 線，全部共用同一條富途連線。
 
         先以 get_cur_kline 取最近 count 根作起點（這一步同時完成訂閱），之後富途每次推送即更新
         最新一根（未走完的 bar 亦會持續推送），有變化才呼叫 on_update(code, rows)。回調在 SDK 的
         推送執行緒中發生。seconds 為持續秒數，0 表示直到 Ctrl-C。
+        raw=True 時起點與推送一律為富途原生欄位，按原生 time_key 合併（見 NativeBars）。
         """
         if ktype not in FUTU_KTYPE:
             raise CodeError(f"ktype_unsupported: {ktype}（可用：{'/'.join(FUTU_KTYPE)}）")
@@ -236,12 +263,12 @@ class FutuBroker(SymbolBroker):
         markets = {code: parse_code(code).market for code in codes}
         mergers: dict[str, BarMerger] = {}
         for code in codes:
-            seed = self._kline_recent(code, markets[code], ktype, min(count, FUTU_PAGE_MAX), autype)
-            merger = BarMerger(count)
+            seed = self._kline_recent(code, markets[code], ktype, min(count, FUTU_PAGE_MAX), autype, raw=raw)
+            merger = NativeBars(count, "time_key") if raw else BarMerger(count)
             merger.merge(seed)
             mergers[code] = merger
 
-        self._ctx.set_handler(_KlinePushHandler(self, ktype, markets, mergers, on_update))
+        self._ctx.set_handler(_KlinePushHandler(self, ktype, markets, mergers, on_update, raw=raw))
         self._ctx.start()  # 對稱於結束時的 stop()；此 SDK 連線後預設已在接收推送
         try:
             stream_wait(seconds)
@@ -252,7 +279,7 @@ class FutuBroker(SymbolBroker):
 
     # ---------- 戶口 ----------
 
-    def get_accounts(self, currency: str | None = None) -> list[dict]:
+    def get_accounts(self, currency: str | None = None, *, raw: bool = False) -> list[dict]:
         """戶口清單與資金：get_acc_list 定戶口性質，accinfo_query 取該戶口的資金。
 
         只取 trd_env=REAL 且 acc_status=ACTIVE 的戶口：統一格式不再區分 real/simulate，模擬戶口的
@@ -262,6 +289,8 @@ class FutuBroker(SymbolBroker):
         傳幣種且沒有跨幣種匯總（實測其數字只屬該幣種，另有各幣種明細欄），故未指定 currency 時以
         該戶口首個授權市場的結算幣為準。富途以字串 "N/A" 表示無值，一律還原為 NaN；富途沒有的欄位
         （負債權益）亦為 NaN，不以任何數字湊出。
+        raw=True 時每列為該戶口的原生記錄：get_acc_list 的各欄加上 accinfo_query 的各欄（每個所查
+        幣種各一列），不做任何映射或換算；取數範圍（只取 REAL 且 ACTIVE 的戶口）不變。
         """
         ctx = futu.OpenSecTradeContext(
             filter_trdmarket=futu.TrdMarket.NONE,
@@ -278,10 +307,14 @@ class FutuBroker(SymbolBroker):
             for acc in listing.to_dict("records"):
                 if str(acc["trd_env"]) != "REAL" or str(acc["acc_status"]) != "ACTIVE":
                     continue
-                funds, error = self._acc_funds(ctx, acc, currency)
-                if funds is None:
+                item, ccy, error = self._acc_funds(ctx, acc, currency)
+                if item is None:
                     errors.append(f"acc_id={acc['acc_id']}: {error}")
                     continue
+                if raw:
+                    rows.append({**acc, **item})
+                    continue
+                funds = _funds_of(item, ccy)
                 rows.append(account_row(
                     source=self.source,
                     account_id=acc["acc_id"],
@@ -296,12 +329,12 @@ class FutuBroker(SymbolBroker):
         finally:
             ctx.close()
 
-    def _acc_funds(self, ctx, acc: dict, currency: str | None) -> tuple[dict | None, str]:
-        """單一戶口的資金（accinfo_query）。取不到時返回 (None, 原因)。"""
+    def _acc_funds(self, ctx, acc: dict, currency: str | None) -> tuple[dict | None, str, str]:
+        """單一戶口的資金：返回 (accinfo_query 的原生單行, 所查幣種, 原因)。取不到時首項為 None。"""
         try:
             ccy = currency or _account_currency(acc)
         except ValueError as exc:
-            return None, str(exc)
+            return None, "", str(exc)
         ret, df = ctx.accinfo_query(
             trd_env=futu.TrdEnv.REAL,
             acc_id=acc["acc_id"],
@@ -309,24 +342,12 @@ class FutuBroker(SymbolBroker):
             refresh_cache=True,  # 不強制刷新時可能返回舊值（實測模擬戶口更會回報「此数据暂时还未准备好」）
         )
         if ret != 0 or df.empty:
-            return None, str(df)
-        item = df.to_dict("records")[0]
-        return {
-            "currency": str(item.get("currency") or ccy),
-            "net_liquidation": item.get("total_assets"),  # 富途的總資產即淨資產值
-            "cash": item.get("cash"),
-            "market_value": item.get("market_val"),
-            "available_funds": item.get("available_funds"),
-            "buying_power": item.get("power"),
-            "init_margin": item.get("initial_margin"),
-            "maint_margin": item.get("maintenance_margin"),
-            "unrealized_pnl": item.get("unrealized_pl"),
-            "realized_pnl": item.get("realized_pl"),
-        }, ""
+            return None, ccy, str(df)
+        return df.to_dict("records")[0], ccy, ""
 
     # ---------- 內部 ----------
 
-    def _codes(self, markets: Iterable[str], type_names: tuple[str, ...]) -> list[dict]:
+    def _codes(self, markets: Iterable[str], type_names: tuple[str, ...], raw: bool = False) -> list[dict]:
         self.connect()
         rows: list[dict] = []
         for market in markets:
@@ -343,6 +364,9 @@ class FutuBroker(SymbolBroker):
                     raise RuntimeError(
                         f"upstream_error: get_stock_basicinfo {market}/{type_name} 失敗: {df}"
                     )
+                if raw:
+                    rows.extend(df.to_dict("records"))
+                    continue
                 rows.extend(self._to_row(market, type_name, item) for item in df.itertuples())
         return rows
 
@@ -354,7 +378,6 @@ class FutuBroker(SymbolBroker):
     def _to_row(self, market: str, type_name: str, item) -> dict:
         code = getattr(item, "code", "")
         symbol = code.split(".", 1)[1] if "." in code else code
-        last_trade = str(getattr(item, "last_trade_time", "") or "")
         return self.make_row(
             code=code,
             name=getattr(item, "name", ""),
@@ -363,8 +386,6 @@ class FutuBroker(SymbolBroker):
             symbol_type=TYPE_OF[type_name],
             currency=currency_of(market),
             exchange=self._venue(str(getattr(item, "exchange_type", "") or "")),
-            expiry="".join(ch for ch in last_trade if ch.isdigit())[:8],
-            raw_code=code,
         )
 
 
@@ -373,9 +394,11 @@ class _KlinePushHandler(futu.CurKlineHandlerBase):
 
     回調在 SDK 的獨立執行緒中執行。同一連線亦可能收到其他 ktype 的推送（get_kline 同樣會訂閱），
     故只處理本次串流所訂閱的 k_type；推送未帶代碼或代碼不在本次串流範圍時一併忽略。
+    raw=True 時不做任何轉換，各代碼的合併器為 NativeBars（按原生 time_key 合併）。
     """
 
-    def __init__(self, broker: FutuBroker, ktype: str, markets: dict, mergers: dict, on_update):
+    def __init__(self, broker: FutuBroker, ktype: str, markets: dict, mergers: dict, on_update,
+                 raw: bool = False):
         super().__init__()  # SDK 的 RspHandlerBase.__del__ 依賴其 __init__ 建立的屬性
         self._broker = broker
         self._ktype = ktype  # 統一 ktype，供 _to_kline_row 的週期對齊使用
@@ -383,11 +406,21 @@ class _KlinePushHandler(futu.CurKlineHandlerBase):
         self._markets = markets
         self._mergers = mergers
         self._on_update = on_update
+        self._raw = raw
 
     def on_recv_rsp(self, rsp_pb):
         ret, df = super().on_recv_rsp(rsp_pb)
         if ret != futu.RET_OK:
             return ret, df
+        if self._raw:
+            grouped: dict[str, list[dict]] = {}
+            for row in df.to_dict("records"):
+                if row.get("k_type") == self._push_type and row.get("code") in self._mergers:
+                    grouped.setdefault(str(row["code"]), []).append(row)
+            for code, rows in grouped.items():
+                if self._mergers[code].merge(rows) and self._on_update is not None:
+                    self._on_update(code, self._mergers[code].frame())
+            return futu.RET_OK, None
         for item in df.itertuples():
             merger = self._mergers.get(item.code)
             if merger is None or item.k_type != self._push_type:

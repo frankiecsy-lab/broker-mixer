@@ -1,5 +1,6 @@
 """驗收 `brokery_api/ui.html` 的客戶端行為：以存根閘道（不連任何券商、不佔用 `.env` 的 API_PORT）
-提供 `/`、`/health`、`/capabilities`、`/brokers`、`/logs`、`/accounts`、`/stocks`、`/codes`，再用
+提供 `/`、`/health`、`/capabilities`、`/brokers`、`/logs`、`/accounts`、`/stocks`、`/codes`、
+`/codes/meta`、`/codes/refresh`，再用
 Chromium 載入頁面，核對內聯腳本無語法錯誤、頂欄按 `/brokers` 渲染四家連線指示（可連顯示延遲毫秒、
 斷開顯示「斷開」並在懸停顯示原因）、金鑰填入後存入 localStorage 並在重新載入後自動回填，探測只由
 載入與「探測連線」按鈕觸發（不輪詢）。
@@ -9,6 +10,9 @@ Chromium 載入頁面，核對內聯腳本無語法錯誤、頂欄按 `/brokers`
 含義不同，且依能力聲明判定，未聲明者不得顯示為無返回）、區內不重複 source 欄；標的頁不再有「統一格式
 輸出」面板（即時清單只以分區呈現，不得另設單一合併表格）；離線 CODES 不分區，以單一表格顯示，其欄位
 與順序必須與接口原樣返回的 COLUMNS 完全一致。
+離線快照另驗：由 /codes/meta 顯示快照的行數與距今時間，過舊以警告色（非錯誤色）提示；「更新 CODES」只向
+/codes/refresh 送出且不带市場參數（快照即全量），完成後重讀快照與表格；搜尋零結果且快照過舊時必須提示按
+「更新 CODES」（查唔到往往只係快照冇咗新上市的代碼）。
 讀取提示另驗：請求進行時訊息位與各區均顯示讀取中（存根對 /stocks 故意延遲 0.8 秒以便觀察）。
 
 需要 Chromium（`pip install playwright` 後 `playwright install chromium`）；未安裝時跳過並返回成功。
@@ -26,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # 項目根目錄
 
 from brokery.brokers.base import ACCOUNT_COLUMNS, BROKER_COLUMNS, COLUMNS
+from brokery.core import CODES_META_COLUMNS
 
 UI = Path(__file__).resolve().parents[2] / "brokery_api" / "ui.html"
 ROWS = [["futu", True, 178.066, 2, "", 1791696259],
@@ -37,10 +42,10 @@ ROWS = [["futu", True, 178.066, 2, "", 1791696259],
 ACCOUNT_ROWS = [["futu", "1234567", "individual", "ACTIVE", "HKD"] + [1000.0] * 10,
                 ["ib", "U11976982", "individual", "ACTIVE", "USD"] + [2000.0] * 10]
 # 股票清單只當富途有返回；ib 未聲明 STOCK 能力（應顯示「不提供此清單」），tiger 與 webull 聲明咗但
-# 本次冇返回（應顯示「無返回」）— 兩者含義不同，必須分得開。expiry 為空字串而非 None：字串欄位
-# 一律以空字串表示無值（見 brokers.base.COLUMNS）。
-STOCK_ROWS = [["HK.00700", "騰訊控股", "HK", "00700", "STOCK", "HKD", "HKEX", "", "futu", "00700"],
-              ["US.AAPL", "蘋果", "US", "AAPL", "STOCK", "USD", "NASDAQ", "", "futu", "AAPL"]]
+# 本次冇返回（應顯示「無返回」）— 兩者含義不同，必須分得開。行必須嚴格為 COLUMNS（見 brokers.base）：
+# 不設到期月欄，券商原生標識只在 raw=True 的原生格式中出現。
+STOCK_ROWS = [["HK.00700", "騰訊控股", "HK", "00700", "STOCK", "HKD", "HKEX", "futu"],
+              ["US.AAPL", "蘋果", "US", "AAPL", "STOCK", "USD", "NASDAQ", "futu"]]
 # 能力聲明為各家實際聲明者（實測），非湊齊：ib 冇股票清單、webull 冇指數清單。
 CAPS = {"sources": ["futu", "ib", "tiger", "webull"], "ktypes": ["day", "1m"],
         "acc_filters": ["all", "cash", "margin"],
@@ -48,6 +53,10 @@ CAPS = {"sources": ["futu", "ib", "tiger", "webull"], "ktypes": ["day", "1m"],
                      "ib": {"autypes": [], "capabilities": ["FUTURE", "INDEX"]},
                      "tiger": {"autypes": [], "capabilities": ["STOCK", "FUTURE", "INDEX"]},
                      "webull": {"autypes": [], "capabilities": ["STOCK", "FUTURE"]}}}
+# 離線快照的元資料：一行，欄位與順序即 CODES_META_COLUMNS。刻意給一筆超過 24 小時的快照（距今 90000 秒
+# → 頁面顯示「1 天前」），因為本頁要驗的正是「過舊以警告色提示」與「搜尋零結果時提示按『更新 CODES』」。
+CODES_META_ROWS = [["futu_codes", 38569, 8, "2026-10-10T10:00:00+00:00", 90000.0, True, "futu",
+                   "HK/US 全量 CODES", ""]]
 KEY = "my-secret-key"
 
 
@@ -85,6 +94,11 @@ class Stub(BaseHTTPRequestHandler):
                 # 離線 CODES 為存放快照，唔涉及即時取數：客戶端應以單一表格顯示，唔分四區。
                 "/codes": {"status": True, "data": {"columns": COLUMNS, "rows": STOCK_ROWS},
                            "message": "ok（2 條，來源 futu）"},
+                "/codes/meta": {"status": True, "data": {"columns": list(CODES_META_COLUMNS),
+                                                         "rows": CODES_META_ROWS}, "message": "ok"},
+                "/codes/refresh": {"status": True,
+                                   "data": {"columns": list(CODES_META_COLUMNS), "rows": CODES_META_ROWS},
+                                   "message": "ok: 已更新 2 條 CODES（STOCK 2（+0））"},
             }.get(path, {"status": False, "data": {}, "message": "stub"})
             raw, ctype = json.dumps(body, ensure_ascii=False).encode("utf-8"), "application/json"
         self.send_response(200)
@@ -177,6 +191,18 @@ def main() -> dict:
             offline_rows = len(page.query_selector_all("#c-raw-table tbody tr"))
             offline_title = page.eval_on_selector("#c-raw-title", "e => e.textContent")
             offline_info = page.eval_on_selector("#c-raw-info", "e => e.textContent")
+
+            # 快照年齡與搜尋零結果的提示：兩者都只讀離線快照，不涉及任何券商連線。
+            snapshot_line = page.eval_on_selector("#c-snapshot", "e => e.className + '|' + e.textContent")
+            page.fill("#c-filter", "zzzz")
+            page.wait_for_timeout(300)
+            zero_hint = page.eval_on_selector("#c-count", "e => e.textContent")
+            page.fill("#c-filter", "")
+            Stub.raw.clear()
+            page.click("#c-refresh")
+            page.wait_for_timeout(1500)
+            refresh_raw = [p for p in Stub.raw if p.startswith("/codes")]
+            refresh_msg = page.eval_on_selector("#c-msg", "e => e.textContent")
             browser.close()
     finally:
         srv.shutdown()
@@ -228,6 +254,18 @@ def main() -> dict:
     check("單一表格標示離線 CODES 與所調用的端點",
           offline_title == "離線 CODES" and offline_info.startswith("GET /codes"),
           f"{offline_title} | {offline_info}")
+    # 快照過舊不是失敗（已存放的資料仍可用），故以警告色而非錯誤色顯示。
+    check("離線 CODES 頁顯示快照行數與距今時間，過舊以警告色提示",
+          "msg warn" in snapshot_line and "38569 條" in snapshot_line and "1 天前" in snapshot_line,
+          snapshot_line)
+    check("搜尋零結果且快照過舊時提示按「更新 CODES」",
+          "0 / 2 條" in zero_hint and "快照已過舊" in zero_hint, zero_hint)
+    check("「更新 CODES」只向 /codes/refresh 送出（不带市場參數，快照即全量）",
+          refresh_raw[:1] == ["/codes/refresh"] and all("?" not in p for p in refresh_raw),
+          ",".join(refresh_raw))
+    check("更新完成後原樣顯示結果並重讀快照與表格",
+          "已更新 2 條 CODES" in refresh_msg and "/codes/meta" in refresh_raw,
+          f"{refresh_msg} | {','.join(refresh_raw)}")
 
     for label, passed, detail in checks:
         print(f"{'PASS' if passed else 'FAIL'} {label}（{detail}）")
@@ -236,7 +274,7 @@ def main() -> dict:
         return {"status": False, "data": chips, "message": "失敗：" + "；".join(failed)}
     return {"status": True, "data": chips,
             "message": f"{len(checks)} 項檢查全過：四家指示、金鑰記憶、戶口頁自動刷新與來源汇总、"
-                       "標的來源標示與離線 CODES 表格均正常"}
+                       "標的來源標示與離線 CODES 表格、快照年齡顯示與更新按鈕均正常"}
 
 
 if __name__ == "__main__":

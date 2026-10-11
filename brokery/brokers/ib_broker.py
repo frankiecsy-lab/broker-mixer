@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import dataclasses
 import threading
 from collections.abc import Iterable
 
@@ -45,6 +46,7 @@ from .base import (
     CAP_FUTURE,
     CAP_INDEX,
     BarMerger,
+    NativeBars,
     SymbolBroker,
     account_row,
     align_ts,
@@ -189,22 +191,26 @@ class IbBroker(SymbolBroker):
 
     # ---------- 清單 ----------
 
-    def list_futures(self, seeds: Iterable) -> list[dict]:
-        """按種子 root 展開主連與所有到期月。"""
-        return self._run(lambda ib: self._collect_futures(ib, seeds))
+    def list_futures(self, seeds: Iterable, *, raw: bool = False) -> list[dict]:
+        """按種子 root 展開主連與所有到期月。
 
-    def list_indices(self, seeds: Iterable) -> list[dict]:
-        """按種子符號解析指數。"""
-        return self._run(lambda ib: self._collect(ib, seeds, self._index_contracts))
+        raw=True 時每列為 reqContractDetails 返回的原生欄位（見 _native_row），不做任何映射；取數範圍
+        （同一批種子、同樣先展開個月份再取主連）不變。
+        """
+        return self._run(lambda ib: self._collect_futures(ib, seeds, raw=raw))
 
-    async def _collect(self, ib: IB, seeds: Iterable, expand) -> list[dict]:
+    def list_indices(self, seeds: Iterable, *, raw: bool = False) -> list[dict]:
+        """按種子符號解析指數。raw=True 時同上。"""
+        return self._run(lambda ib: self._collect(ib, seeds, self._index_contracts, raw=raw))
+
+    async def _collect(self, ib: IB, seeds: Iterable, expand, raw: bool = False) -> list[dict]:
         rows: list[dict] = []
         for seed in seeds:
             for contract in expand(seed):
-                rows.extend(await self._details(ib, contract, seed.market))
-        return dedupe_rows(rows)
+                rows.extend(await self._details(ib, contract, seed.market, raw=raw))
+        return rows if raw else dedupe_rows(rows)
 
-    async def _collect_futures(self, ib: IB, seeds: Iterable) -> list[dict]:
+    async def _collect_futures(self, ib: IB, seeds: Iterable, raw: bool = False) -> list[dict]:
         """個月份以 FUT 展開所有到期月，主連其後以該 root 的掛牌交易所查 CONTFUT。
 
         順序不能對調：CONTFUT 不帶 exchange 一律返回「No security definition found」，而 exchange 只能
@@ -213,21 +219,22 @@ class IbBroker(SymbolBroker):
         rows: list[dict] = []
         for seed in seeds:
             months = await self._req_details(ib, Contract(secType="FUT", symbol=seed.root))
-            rows.extend(self._rows(months, "FUT", seed.market))
+            rows.extend(self._rows(months, "FUT", seed.market, raw=raw))
             for exchange in _primary_exchanges(months):
                 continuous = await self._req_details(
                     ib, Contract(secType="CONTFUT", symbol=seed.root, exchange=exchange))
                 if continuous:
-                    rows.extend(self._rows(continuous, "CONTFUT", seed.market))
+                    rows.extend(self._rows(continuous, "CONTFUT", seed.market, raw=raw))
                     break
-        return dedupe_rows(rows)
+        return rows if raw else dedupe_rows(rows)
 
     @staticmethod
     def _index_contracts(seed):
         return [Contract(secType="IND", symbol=seed.symbol)]
 
-    async def _details(self, ib: IB, contract: Contract, hint_market: str) -> list[dict]:
-        return self._rows(await self._req_details(ib, contract), contract.secType, hint_market)
+    async def _details(self, ib: IB, contract: Contract, hint_market: str,
+                       raw: bool = False) -> list[dict]:
+        return self._rows(await self._req_details(ib, contract), contract.secType, hint_market, raw=raw)
 
     async def _req_details(self, ib: IB, contract: Contract):
         try:
@@ -235,13 +242,29 @@ class IbBroker(SymbolBroker):
         except asyncio.TimeoutError:
             raise RuntimeError(f"timeout: IB reqContractDetails {contract.symbol} 超過 {self.timeout}s") from None
 
-    def _rows(self, details, sec_type: str, hint_market: str) -> list[dict]:
+    def _rows(self, details, sec_type: str, hint_market: str, raw: bool = False) -> list[dict]:
+        if raw:
+            return [self._native_row(cd) for cd in details]
         rows = []
         for cd in details:
             row = self._row_from_details(cd, sec_type, hint_market)
             if row:
                 rows.append(row)
         return rows
+
+    @staticmethod
+    def _native_row(cd) -> dict:
+        """reqContractDetails 單條結果的原生欄位：ContractDetails 各欄加上其 Contract 各欄。
+
+        contract 欄的值即後者，展開後再保留便重複，故略去。值一律原樣（含 secIdList、comboLegs 等物件），
+        不轉為文字也不拆值。
+        """
+        row = {field.name: getattr(cd, field.name, None) for field in dataclasses.fields(cd)}
+        row.pop("contract", None)
+        contract = cd.contract
+        row.update({field.name: getattr(contract, field.name, None)
+                    for field in dataclasses.fields(contract)})
+        return row
 
     def _row_from_details(self, cd, sec_type: str, hint_market: str) -> dict | None:
         c = cd.contract
@@ -256,12 +279,12 @@ class IbBroker(SymbolBroker):
         except CodeError:
             market = hint_market
 
+        # IB 以 root 表達個月份合約，到期月只在 lastTradeDateOrContractMonth。統一格式不設到期月欄，
+        # 故與富途一樣把到期月寫進符號（如 ES202612），否則各月份合約會成爲同一個代碼。
         if continuous:
             symbol = f"{root}{MAIN_SUFFIX}"
-            expiry = ""
         else:
-            symbol = root
-            expiry = raw_expiry
+            symbol = f"{root}{raw_expiry}" if raw_expiry else root
 
         name = getattr(cd, "contractSymbolDescription", "") or getattr(cd, "longName", "") or ""
         return self.make_row(
@@ -272,8 +295,6 @@ class IbBroker(SymbolBroker):
             symbol_type=FUTURE if sec_type in ("FUT", "CONTFUT") else INDEX,
             currency=currency,
             exchange=exchange,
-            expiry=expiry,
-            raw_code=f"{sec_type}|{root}|{exchange}|{currency}|{raw_expiry}|{c.conId}",
         )
 
     # ---------- 代碼轉換 ----------
@@ -288,9 +309,10 @@ class IbBroker(SymbolBroker):
         root, expiry = split_future_symbol(parsed.symbol)
         native = to_native_symbol(parsed.market, root)
         currency = currency_of(parsed.market)
-        # 個月份的到期月一律放 expiry 欄，不寫進代碼；US.ES20261218 正規化為 US.ES。
+        # 個月份合約的代碼自帶到期月（US.ES202612），與清單所出者一致；到期月只作 IB 的合約參數，
+        # 不從代碼中剝走，否則同一 root 的各月份會成爲同一個代碼。
         if expiry:
-            normalised = root
+            normalised = parsed.symbol
         elif root != parsed.symbol:
             normalised = f"{root}{MAIN_SUFFIX}"
         else:
@@ -370,11 +392,13 @@ class IbBroker(SymbolBroker):
 
     # ---------- K 線 ----------
 
-    def get_kline(self, code: str, ktype: str, count: int, autype: str) -> list[dict]:
+    def get_kline(self, code: str, ktype: str, count: int, autype: str, *, raw: bool = False) -> list[dict]:
         """按 bar 數取 K 線：先換算出足夠的時間跨度，再取最後 count 根（對齊富途的 bar 數語義）。
 
         IB 沒有 bar 數參數，故跨度刻意多覆蓋周末與假期。autype 只可能是 none 或 qfq（其餘由 core
         擋掉），其中 qfq 僅適用日內與日線。IB 不返回成交額，turnover 為 NaN。
+        raw=True 時列為 BarData 的原生欄位（date 為 datetime），排序與截尾改按原生 date（同一格式，
+        升序即時間升序），取數範圍不變。
         """
         if ktype not in IB_BAR_SIZE:
             raise CodeError(f"ktype_unsupported: {ktype}（可用：{'/'.join(IB_BAR_SIZE)}）")
@@ -384,7 +408,7 @@ class IbBroker(SymbolBroker):
                 "（IB 對多於一日的 bar 直接報 error 321「Multi day bar size not supported with"
                 ' adjusted last」）；週/月線請用 autype="none"'
             )
-        return self._run(lambda ib: self._kline(ib, code, ktype, count, autype))
+        return self._run(lambda ib: self._kline(ib, code, ktype, count, autype, raw=raw))
 
     async def _resolve_cached(self, ib: IB, code: str) -> dict:
         """按統一代碼解析合約，結果快取。"""
@@ -394,7 +418,8 @@ class IbBroker(SymbolBroker):
             self._contracts[code] = info
         return info
 
-    async def _kline(self, ib: IB, code: str, ktype: str, count: int, autype: str) -> list[dict]:
+    async def _kline(self, ib: IB, code: str, ktype: str, count: int, autype: str,
+                     raw: bool = False) -> list[dict]:
         parsed = parse_code(code)
         resolved = await self._resolve_cached(ib, code)
         # IB 查詢失敗時只以 errorEvent 回報，reqHistoricalData 則返回空表；不留痕便無法判斷是
@@ -423,9 +448,18 @@ class IbBroker(SymbolBroker):
             ib.errorEvent -= _note
         if not bars:
             raise RuntimeError(f"no_bars: {code} IB 未返回任何 bar（{ '；'.join(failures) or '可能無市場數據權限' }）")
-        rows = [self._to_kline_row(resolved["code"], parsed.market, ktype, bar) for bar in bars]
-        rows.sort(key=lambda row: row["ts"])
+        if raw:
+            rows = [self._native_bar(bar) for bar in bars]
+            rows.sort(key=lambda row: row["date"])
+        else:
+            rows = [self._to_kline_row(resolved["code"], parsed.market, ktype, bar) for bar in bars]
+            rows.sort(key=lambda row: row["ts"])
         return rows[-count:]
+
+    @staticmethod
+    def _native_bar(bar) -> dict:
+        """reqHistoricalData 單根 bar 的原生欄位（BarData 各欄），值不做換算。"""
+        return {field.name: getattr(bar, field.name, None) for field in dataclasses.fields(bar)}
 
     def _to_kline_row(self, code: str, market: str, ktype: str, bar) -> dict:
         return kline_row(
@@ -451,12 +485,15 @@ class IbBroker(SymbolBroker):
         autype: str,
         seconds: float,
         on_update,
+        *,
+        raw: bool = False,
     ) -> dict[str, list[dict]]:
         """串流多個代碼的最新 K 線，全部共用同一條 IB 連線。
 
         以 reqHistoricalData(keepUpToDate=True) 實現：該請求先返回歷史 bar，之後同一個 bar 序列由
         IB 持續更新（最新一根未走完時反覆改寫，走完後追加新根），故起點即歷史，不需另一次查詢。
         回調在連線執行緒中發生。seconds 為持續秒數，0 表示直到 Ctrl-C。
+        raw=True 時起點與推送一律為 BarData 的原生欄位，按原生 date 合併（見 NativeBars）。
         """
         if ktype not in IB_BAR_SIZE:
             raise CodeError(f"ktype_unsupported: {ktype}（可用：{'/'.join(IB_BAR_SIZE)}）")
@@ -468,7 +505,7 @@ class IbBroker(SymbolBroker):
             )
         # 每個代碼各自有一次歷史請求，外層兜底須按代碼數放宽，否則多張圖時會誤報超時。
         sessions = self._run(
-            lambda ib: self._open_streams(ib, codes, ktype, count, autype, on_update),
+            lambda ib: self._open_streams(ib, codes, ktype, count, autype, on_update, raw=raw),
             budget=self.timeout * len(codes) + 10,
         )
         try:
@@ -477,7 +514,8 @@ class IbBroker(SymbolBroker):
             self._run(lambda ib: self._close_streams(ib, sessions))
         return {code: merger.frame() for code, _bars, _handler, merger in sessions}
 
-    async def _open_streams(self, ib: IB, codes, ktype: str, count: int, autype: str, on_update) -> list:
+    async def _open_streams(self, ib: IB, codes, ktype: str, count: int, autype: str, on_update,
+                           raw: bool = False) -> list:
         """逐個代碼建立 keepUpToDate 訂閱，返回 (代碼, bar 序列, 更新回調, 合併器)。"""
         sessions = []
         for code in codes:
@@ -509,15 +547,19 @@ class IbBroker(SymbolBroker):
             if not bars:
                 raise RuntimeError(f"no_bars: {code} IB 未返回任何 bar（{ '；'.join(failures) or '可能無市場數據權限' }）")
             merged_code = resolved["code"]
-            merger = BarMerger(count)
-            merger.merge(
-                self._to_kline_row(merged_code, parsed.market, ktype, bar) for bar in bars
-            )
+            merger = NativeBars(count, "date") if raw else BarMerger(count)
 
-            def _on_bar_update(live_bars, _has_new_bar, code_=merged_code, market=parsed.market,
-                               merger_=merger) -> None:
+            def _row(bar) -> dict:
+                return self._native_bar(bar) if raw else self._to_kline_row(
+                    merged_code, parsed.market, ktype, bar)
+
+            merger.merge(_row(bar) for bar in bars)
+
+            # _row 是迴圈內的區域名稱，回調為共用同一個變數，故以預設參數綁定本輪的轉換器。
+            def _on_bar_update(live_bars, _has_new_bar, code_=merged_code, merger_=merger,
+                               row_=_row) -> None:
                 # 每次更新只改寫最後一根，或在末尾追加新根，故只需合併末尾兩根。
-                rows = [self._to_kline_row(code_, market, ktype, bar) for bar in live_bars[-2:]]
+                rows = [row_(bar) for bar in live_bars[-2:]]
                 if merger_.merge(rows) and on_update is not None:
                     on_update(code_, merger_.frame())
 
@@ -533,15 +575,25 @@ class IbBroker(SymbolBroker):
 
     # ---------- 戶口 ----------
 
-    def get_accounts(self, currency: str | None = None) -> list[dict]:
+    def get_accounts(self, currency: str | None = None, *, raw: bool = False) -> list[dict]:
         """戶口清單與資金：accountSummary 一次取回所連後端能看到的所有戶口。
 
         IB 的真實與模擬由所連 Gateway/TWS 決定，接口本身沒有這個維度，故一律按真實戶口返回。
         acc_type 由 AccountType tag 映射（見 _acc_type_of），無法判定的類別原樣返回。currency 取每
         個金額自帶的結算幣，多幣種帳戶按幣種各列一欄；currency 參數只作篩選，一律不做匯率換算。
         IB 沒有戶口狀態與負債權益欄位，該兩欄為空字串與 NaN，不以任何數字湊出。
+        raw=True 時每列為 accountSummary 單條結果的原生欄位（account/tag/value/currency/modelCode），
+        即一個 tag 一列，不做 tag 歸併、類型映射或金額轉換；取數範圍不變（currency 參數仍按該列
+        自帶的結算幣篩選）。
         """
         summary = self._run(lambda ib: self._account_summary(ib))
+        if raw:
+            rows = []
+            for value in summary:
+                if currency and str(value.currency).upper() != currency.upper():
+                    continue
+                rows.append(dict(value._asdict()))
+            return rows
         acc_type: dict[str, str] = {}
         base_ccy: dict[str, str] = {}
         funds: dict[tuple[str, str], dict] = {}

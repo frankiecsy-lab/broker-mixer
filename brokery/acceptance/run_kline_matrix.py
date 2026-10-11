@@ -9,6 +9,9 @@
    相同（0 根有差別）；股票則必須看到調整（對照組 HK.00005 期內有派息）。
 3. 指數代碼可直接跨券商使用：富途格式的 US..SPX／HK.800000 在 IB 亦能解析（IB 以指數名稱登記，
    美股去前導點即同名，港股只有 IB_INDEX_ALIAS 裏幾隻登記了名稱）。
+4. raw=True 只換欄位與格式，不改取數範圍與數值：同一請求的根數與收市價與統一格式逐根相同，時間欄位
+   為該券商自己的寫法（富途 time_key、Tiger／Webull time、IB date），且不含由適配器構造的 ts／source
+   （富途 K 線框自帶的 code 屬上游原樣，一律保留）；能力閘（type_unsupported）亦不受 raw 影響。
 
 期權只有富途提供（美股期權為完整序列，港股期權實測只返回當日一根）；期權代碼由富途期權鏈即時
 取得，避免寫死到期日。行情權限缺口（富途的美股期貨與指數、IB 的 HKEX A50、Webull 的美股行情）
@@ -61,6 +64,35 @@ NO_ADJUST = [("HK.A50main", "futu"), ("HK.800000", "futu"), ("US.10Ymain", "ib")
 ADJUST = ("HK.00005", "futu", 250)
 # 同一指數跨券商逐根對照（以第一家為準）。富途無美股指數權限，故美股以 Tiger 為準。
 CROSS = [("HK.800000", ("futu", "ib")), ("US..SPX", ("tiger", "ib"))]
+
+
+# raw=True 的對照：時間欄位必須是該券商自己的寫法（富途 time_key、Tiger／Webull time、IB date），
+# 復權參數按各家接口實際支持者填寫（Webull 的日線只有前復權），代碼則按該賬戶實際開通的行情選
+# （Webull 的憑證只開通 HK 行情，美股會先撞到 market_data_not_subscribed）。
+RAW_KLINE = [("HK.00005", "futu", "time_key", "none"), ("HK.00005", "webull", "time", "qfq"),
+             ("US..SPX", "tiger", "time", "none"), ("HK.800000", "ib", "date", "none")]
+
+
+def raw_kline_checks(base: dict, raw: dict, time_field: str) -> list[tuple[str, bool, str]]:
+    """raw K 線：欄位與時間寫法即上游原樣；根數與數值與統一格式逐根一致（raw 不改數）。
+
+    只有 ts／source 是由適配器構造的（時間轉換與來源標記）。code 不是：富途自己的 K 線框就帶 code，
+    屬上游原樣，必須保留。
+    """
+    frame, columns = raw["data"], list(raw["data"].columns)
+    built = sorted({"ts", "source"} & set(columns))
+    checks = [("信封仍只有三鍵", set(raw) == {"status", "data", "message"}, str(sorted(raw))),
+              ("欄位即該券商原生鍵（不是 K_COLUMNS）", bool(columns) and columns != K_COLUMNS,
+               ",".join(columns[:8])),
+              ("時間欄位為該券商自己的寫法", time_field in columns, time_field),
+              ("不含由適配器構造的統一欄位", not built, ",".join(built)),
+              ("根數不變（count 不受 raw 影響）", raw["status"] and len(frame) == len(base["data"]),
+               f"raw={len(frame)} 統一={len(base['data'])}")]
+    if raw["status"] and "close" in columns and len(frame) == len(base["data"]):
+        gap = (pd.to_numeric(frame["close"], errors="coerce")
+               - pd.to_numeric(base["data"]["close"], errors="coerce")).abs().max()
+        checks.append(("收市價逐根相同（raw 不改數）", bool(gap <= PRICE_EPS), f"最大相差 {gap}"))
+    return checks
 
 
 def _diff(left: pd.DataFrame, right: pd.DataFrame) -> tuple[int, int, float]:
@@ -117,6 +149,22 @@ def main() -> dict:
         checks.append(("ib 串流期權明確拒绝",
                        not streamed["status"] and streamed["message"].startswith("type_unsupported"),
                        streamed["message"]))
+        gated = b.get_kline("HK.A50main", ktype=KTYPE, count=5, broker="webull", autype="none", raw=True)
+        checks.append(("能力閘不受 raw 影響（未聲明品種同樣在發出請求前即被拒绝）",
+                       not gated["status"] and gated["message"].startswith("type_unsupported"),
+                       gated["message"]))
+
+        # raw=True：同一請求只換欄位與格式，取數範圍與數值一律不變。
+        for code, name, time_field, autype in RAW_KLINE:
+            base = b.get_kline(code, ktype=KTYPE, count=5, broker=name, autype=autype)
+            if not base["status"]:  # 行情權限與後端可達性屬賬戶/環境，不屬本腳本的驗收範圍
+                print(f"WARN {name} {code} 取不到，raw 對照跳過：{base['message']}")
+                continue
+            raw = b.get_kline(code, ktype=KTYPE, count=5, broker=name, autype=autype, raw=True)
+            print(f"\n===== {name} {code} raw=True status={raw['status']} rows={len(raw['data'])} "
+                  f"columns={list(raw['data'].columns)}")
+            checks += [(f"{name} {code} raw：{label}", passed, detail)
+                       for label, passed, detail in raw_kline_checks(base, raw, time_field)]
 
         # 無公司行動的品種：qfq 與 none 逐根相同。
         for code, name in NO_ADJUST:
@@ -190,7 +238,8 @@ def main() -> dict:
         "status": True,
         "data": merged,
         "message": f"{len(checks)} 項檢查全過：品種推斷與能力閘一致；復權只對股票生效"
-                   f"（期貨／指數／期權 qfq 與 none 逐根相同）；指數代碼可跨券商對齊",
+                   f"（期貨／指數／期權 qfq 與 none 逐根相同）；指數代碼可跨券商對齊；"
+                   f"raw 只換欄位與格式（根數與數值逐根一致）",
     }
 
 

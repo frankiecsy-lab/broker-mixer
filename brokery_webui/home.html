@@ -80,6 +80,12 @@
       <button class="act" id="s-refresh">取得</button>
       <span id="s-sources"></span>
     </div>
+    <!-- 離線 CODES 快照另列一列：本頁的清單是即時取數，快照只是存放中的代碼表（供搜尋與離線查看），
+         兩者含義不同，不可混在同一個統計裡。 -->
+    <div class="bar">
+      <span id="s-snapshot" class="msg"></span>
+      <button class="act" id="s-codes-refresh">更新離線 CODES</button>
+    </div>
     <div class="msg" id="s-msg"></div>
     <div class="panel"><div class="scroll" id="s-table"></div></div>
   </section>
@@ -159,6 +165,8 @@ function loadAccounts() {
 }
 
 const KIND_LABEL = { stock: '股票', future: '期貨', index: '指數' };
+// 能力聲明以 symbol_type 的大寫常量表達（見 brokers/codes.py），與選項值大小寫不同，必須顯式對應。
+const KIND_CAPABILITY = { stock: 'STOCK', future: 'FUTURE', index: 'INDEX' };
 let brokerCaps = {};              // 券商 → 其聲明的品種；由 /api/capabilities 取得，頁面不硬寫券商名單
 const seenMarkets = new Set();    // 只列實際返回過的市場，不憑空給出選項
 
@@ -181,7 +189,7 @@ function renderBrokers() {
   const kind = $('s-kind').value;
   const current = $('s-broker').value;
   $('s-broker').innerHTML = Object.entries(brokerCaps).map(([name, caps]) => {
-    const supported = (caps.capabilities || []).includes(kind);
+    const supported = (caps.capabilities || []).includes(KIND_CAPABILITY[kind]);
     const label = supported ? name : `${name}（不提供${KIND_LABEL[kind]}）`;
     return `<option value="${esc(name)}"${supported ? '' : ' disabled'}${name === (current || 'futu') ? ' selected' : ''}>${esc(label)}</option>`;
   }).join('');
@@ -207,11 +215,56 @@ async function loadSymbols() {
   renderMarkets();
 }
 
+// 離線 CODES 快照的狀態：經 /api/codes/meta 轉發閘道，離線執行，不需要任何券商連線。快照往往是
+// 唯一的離線副本，過舊時會查唔到新上市的代碼，故以警告色標示並提示可更新。
+let snapshot = null;
+
+function ageText(seconds) {
+  if (!Number.isFinite(seconds)) return '無存放時間';
+  for (const [unit, size] of [['天', 86400], ['小時', 3600], ['分鐘', 60]]) {
+    if (seconds >= size) return `${Math.floor(seconds / size)} ${unit}前`;
+  }
+  return '剛剛';
+}
+
+async function loadSnapshotMeta() {
+  const el = $('s-snapshot');
+  let body;
+  try {
+    body = await (await fetch('/api/codes/meta')).json();
+  } catch (err) {
+    setMsg(el, `讀取離線 CODES 狀態失敗：${err}`, 'err');
+    return;
+  }
+  if (!body.status) { snapshot = null; setMsg(el, `離線 CODES：${body.message}`, 'err'); return; }
+  const cols = body.data.columns || [], row = (body.data.rows || [])[0] || [];
+  snapshot = Object.fromEntries(cols.map((c, i) => [c, row[i]]));
+  setMsg(el, `離線 CODES：${snapshot.rows} 條 · ${ageText(snapshot.age_seconds)}`
+         + (snapshot.last_refresh_error ? ' · 上次更新失敗' : ''),
+         snapshot.stale || snapshot.last_refresh_error ? 'warn' : '');
+}
+
+async function refreshCodes() {
+  const btn = $('s-codes-refresh');
+  btn.disabled = true;   // 重拉需數秒，期間不可重覆送出
+  setMsg($('s-msg'), '更新離線 CODES 中…（需券商連線，約數秒）', 'busy');
+  try {
+    const body = await (await fetch('/api/codes/refresh')).json();
+    // 失敗原因原樣顯示（例如某品種明顯縮細而拒絕覆蓋）：用戶需要知道快照並未改變。
+    setMsg($('s-msg'), body.message, body.status ? '' : 'err');
+  } catch (err) {
+    setMsg($('s-msg'), `請求失敗：${err}`, 'err');
+  } finally {
+    btn.disabled = false;
+    loadSnapshotMeta();   // 成敗都要重讀：失敗原因會記進快照的 meta
+  }
+}
+
 function show(page) {
   document.querySelectorAll('#menu button').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
   document.querySelectorAll('main section').forEach((s) => s.classList.toggle('active', s.id === 'page-' + page));
   if (page === 'accounts') loadAccounts();
-  if (page === 'symbols') loadBrokers().then(loadSymbols);
+  if (page === 'symbols') { loadBrokers().then(loadSymbols); loadSnapshotMeta(); }
 }
 
 // 轉類型時清空市場選項：各品種返回的市場不同，留著上一品種的市場只會白得一個 empty_list。
@@ -225,6 +278,7 @@ function switchKind() {
 document.querySelectorAll('#menu button').forEach((b) => b.addEventListener('click', () => show(b.dataset.page)));
 $('a-refresh').addEventListener('click', loadAccounts);
 $('s-refresh').addEventListener('click', loadSymbols);
+$('s-codes-refresh').addEventListener('click', refreshCodes);
 $('s-kind').addEventListener('change', switchKind);
 $('s-market').addEventListener('change', loadSymbols);
 $('s-broker').addEventListener('change', loadSymbols);
