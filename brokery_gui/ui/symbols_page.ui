@@ -27,6 +27,19 @@
       <widget class="QPushButton" name="fetchButton"/>
      </item>
      <item>
+      <widget class="QLabel" name="autoIntervalLabel"/>
+     </item>
+     <item>
+      <widget class="QSpinBox" name="autoIntervalSpin">
+       <property name="maximum">
+        <number>86400</number>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QCheckBox" name="liveRefreshCheck"/>
+     </item>
+     <item>
       <spacer name="filterSpacer">
        <property name="orientation">
         <enum>Qt::Horizontal</enum>
@@ -49,6 +62,9 @@
         <bool>true</bool>
        </property>
       </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="codesLoadButton"/>
      </item>
      <item>
       <widget class="QPushButton" name="codesRefreshButton"/>

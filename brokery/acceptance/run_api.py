@@ -21,6 +21,7 @@ import pandas as pd
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from brokery import store
 from brokery.brokers.base import ACCOUNT_COLUMNS, BAR_MINUTES, BROKER_COLUMNS, COLUMNS, K_COLUMNS
 from brokery.core import CODES_META_COLUMNS, codes_max_age_seconds
 from brokery_api.app import create_app, frame_payload
@@ -165,8 +166,8 @@ def main() -> dict:
         check("/codes 離線讀回 CODES", codes["status"] and codes["data"]["columns"] == list(COLUMNS)
               and len(codes["data"]["rows"]) > 0, codes["message"])
 
-        # /codes/meta：快照年齡與是否過舊（供介面顯示「更新」提示）；/codes/refresh 無券商時必須明確
-        # 報錯，且不得動到已存放的快照——離線快照往往是唯一的離線副本。
+        # /codes/meta：快照年齡與是否過舊（供介面顯示「更新」提示）；/codes/refresh 在券商未註冊時必須
+        # 明確報錯，且不得動到已存放的快照——離線快照往往是唯一的離線副本。
         meta = client.get("/codes/meta", headers=HEADERS).json()
         check("/codes/meta 欄位為 CODES_META_COLUMNS 且為單行",
               meta["status"] and meta["data"]["columns"] == list(CODES_META_COLUMNS)
@@ -179,10 +180,42 @@ def main() -> dict:
         # 不重取全量 /codes（數萬條的序列化是本腳本最慢的一步）：以 meta 的行數核對快照未被破壞。
         refresh = client.get("/codes/refresh", headers=HEADERS).json()
         kept = client.get("/codes/meta", headers=HEADERS).json()
-        check("/codes/refresh 無券商時明確報錯並保留原快照",
+        check("/codes/refresh 券商未註冊時明確報錯並保留原快照",
               refresh["status"] is False and refresh["message"].startswith("更新失敗")
               and kept["data"]["rows"][0][list(CODES_META_COLUMNS).index("rows")] == len(codes["data"]["rows"]),
               refresh["message"])
+
+        # 各券商各存一檔：?broker= 決定讀哪一档，讀取與元資料都不得串檔。這裡自建一個暫存券商的快照
+        # （完即刪除），免得依賴環境裡恰好有某一家的快照，也驗證新檔名就是 <broker>_codes。
+        probe = "apitest"
+        probe_name = store.codes_dataset(probe)
+        for path in (store.frame_path(probe_name), store.meta_path(probe_name), store.prev_path(probe_name)):
+            if path.exists():
+                path.unlink()
+        probe_rows = [["US.PROBE", "Probe Inc", "US", "PROBE", "STOCK", "USD", "", probe]]
+        store.save_frame(probe_name, pd.DataFrame(probe_rows, columns=list(COLUMNS)), source=probe, note="接口測試")
+        try:
+            probe_codes = client.get("/codes", params={"broker": probe}, headers=HEADERS).json()
+            check("/codes?broker= 只讀該券商那一檔",
+                  probe_codes["status"] and probe_codes["data"]["columns"] == list(COLUMNS)
+                  and probe_codes["data"]["rows"] == probe_rows, probe_codes["message"])
+            probe_meta = client.get("/codes/meta", params={"broker": probe}, headers=HEADERS).json()
+            prow = dict(zip(probe_meta["data"]["columns"], probe_meta["data"]["rows"][0])) \
+                if probe_meta["status"] else {}
+            check("/codes/meta?broker= 點名的就是 <broker>_codes 這一檔",
+                  prow.get("name") == probe_name and prow.get("rows") == 1, str(prow)[:160])
+            check("?broker= 不會串檔：預設那一檔的行數未受影響",
+                  client.get("/codes/meta", headers=HEADERS).json()["data"]["rows"][0][
+                      list(CODES_META_COLUMNS).index("rows")] == row.get("rows"),
+                  f"預設={row.get('rows')} 測試檔=1")
+            missing = client.get("/codes", params={"broker": "nosuch"}, headers=HEADERS).json()
+            check("該券商尚未存放快照時明確報錯並點名要更新的券商",
+                  missing["status"] is False and 'broker="nosuch"' in missing["message"],
+                  missing["message"][:120])
+        finally:
+            for path in (store.frame_path(probe_name), store.meta_path(probe_name), store.prev_path(probe_name)):
+                if path.exists():
+                    path.unlink()
 
         # 業務失敗仍為 HTTP 200，原因由 status/message 原樣表達，不變成 HTTP 500。
         kline = client.get("/kline", params={"code": "HK.00700", "broker": "futu"}, headers=HEADERS)

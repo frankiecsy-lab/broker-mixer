@@ -9,6 +9,16 @@
       <widget class="QPushButton" name="refreshButton"/>
      </item>
      <item>
+      <widget class="QLabel" name="autoIntervalLabel"/>
+     </item>
+     <item>
+      <widget class="QSpinBox" name="autoIntervalSpin">
+       <property name="maximum">
+        <number>86400</number>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QLabel" name="summaryLabel"/>
      </item>
      <item>

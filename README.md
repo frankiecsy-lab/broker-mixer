@@ -20,16 +20,16 @@ FastAPI 對外為 HTTP/WebSocket 與一個 dashboard（見 §11）；`brokery_we
 | 原生格式 `raw=True`（保留該券商自帶的欄位與值） | ✅ 可用 | 七個連券商方法一律支持：信封仍為三鍵、`data` 即該券商原生欄位與值，**只換欄位與格式，不改取數範圍與數值**（實測同一 K 線 raw 與統一格式的收市價逐根相同，最大相差 0.0）；跳過去重與按統一欄位的行過濾，故行數不少於統一格式；各家時間欄位即自己的寫法（富途 `time_key`、Tiger／Webull `time`、IB `date`）。`run_raw_frames.py` 37 項全過（不需連線）＋四家 raw 對照（`run_list_symbols.py`／`run_get_accounts.py`／`run_kline_matrix.py`） |
 | 代碼雙向轉換（統一代碼 ↔ IB 原生合約） | ✅ 可用 | IB |
 | 離線存放與讀回（parquet + meta） | ✅ 可用 | 本地 `brokery/data/`（由 `.env` 指定） |
-| 離線讀取代碼清單 `get_code` | ✅ 可用 | 本地 parquet，不需要 OpenD / IB（實測 38,569 條讀回 0.03s，即 250 倍於即時重拉，故搜尋一律讀快照） |
-| 更新離線 CODES `refresh_codes`（縮細防護、按品種沿用舊快照、失敗留痕） | ✅ 可用 | 實測重拉港美全量 38,569 條約 6s：指數本次取唔到即沿用舊快照 740 條、其餘照常更新，`message` 說明增減；任何品種少於原本 90% 即拒絕覆蓋；`.prev.parquet` 保留被覆蓋的舊檔；`CODES_MAX_AGE_HOURS`（預設 24）決定過舊，閘道啟動時只在背景自動重拉；`run_codes_refresh.py` 22 項檢查全過 |
+| 離線讀取代碼清單 `get_code`（按券商各一檔 `<broker>_codes`） | ✅ 可用 | 本地 parquet，不需要 OpenD / IB（實測 38,569 條讀回 0.03s，即 250 倍於即時重拉，故搜尋一律讀快照）；讀 futu 不會混入 IB 的 conId，反之亦然 |
+| 更新離線 CODES `refresh_codes`（每家一檔、照能力存放、縮細防護、按品種沿用舊快照、失敗留痕） | ✅ 可用 | 實測重拉港美全量 38,569 條約 6s：指數本次取唔到即沿用舊快照 740 條、其餘照常更新，`message` 說明增減；任何品種少於同一券商上一份快照的 90% 即拒絕覆蓋；快照內容由該家聲明的能力決定（`ib_codes` 只有期貨與指數屬正常）；`.prev.parquet` 保留被覆蓋的舊檔；`CODES_MAX_AGE_HOURS`（預設 24）決定過舊，閘道啟動時只在背景自動重拉 `CODES_SOURCE` 那一檔；`run_codes_refresh.py` 30 項檢查全過（含兩家各一檔互不覆蓋、縮細防護逐家比較） |
 | K 線 `get_kline`（統一格式、以 bar 數取數） | ✅ 可用 | FUTU + IB（日/週/月線實測逐根按 `ts` 對齊，價格一致）+ Webull（日線/分鐘線實測，日線確實做了前復權，調整因子與 IB 一致：與原始成交價最大相差 0.062%）+ Tiger（日線/1 分鐘線實測，`autype="none"` 時 close 與 FUTU 逐根完全一致） |
 | 前復權跨券商對照（日內與日線） | ✅ 可用 | FUTU `qfq` + IB `ADJUSTED_LAST` + Tiger `right=BR` + Webull（日線固定前復權）：`HK.00005` 日線 60 根四家共同 60 根逐根對齊，以富途為準 Tiger 最大相差 0.02%、IB/Webull 0.44% |
 | 品種支持矩陣（股票／期貨／指數／期權）與復權適用範圍 | ✅ 已核實 | 四家實測（`run_kline_matrix.py`，48 項檢查）：不支持的品種由適配器聲明、`core` 統一返回 `type_unsupported`；復權只對股票有效（期貨／指數／期權的 `qfq` 與 `none` 逐根完全相同）；指數代碼可跨券商（`HK.800000` 富途與 IB 的 close 完全相同、`US..SPX` Tiger 與 IB 完全相同） |
 | 戶口與資金 `get_accounts`（四家統一 15 欄） | ✅ 可用 | FUTU + IB + Tiger + Webull（實測 futu 2 個（cash/margin，模擬與已停用的不列）、IB 1 個、Tiger 1 個、Webull 2 個；`currency` 全部填到：futu/IB/Webull 為 HKD、Tiger 為 USD；IB 的 `individual` 在按 `cash`/`margin` 篩選時點名說明而不靜默丟列；59 項檢查） |
 | 券商連線狀態與速度 `get_brokers`（統一 6 欄） | ✅ 可用 | FUTU + IB + Tiger + Webull 四家並行探測實測（futu 178ms／ib 542ms／tiger 1216ms／webull 954ms，總耗時 1.2s ≈ 最慢一家）；探測用一次戶口查詢，故不需要行情權限；22 項檢查全過 |
-| HTTP/WS 閘道與 dashboard `brokery_api`（自訂 API Key、K 線圖、實時訂閱、戶口（四家同屏、10 秒自動刷新）、標的（按來源分四區；離線 CODES 以單一表格顯示，另列一行顯示快照年齡並可一键更新）、日誌窗、四家連線狀態與延遲、讀取提示） | ✅ 可用 | 四家經同一閘道實測（`/kline`、`/accounts`、`/brokers`、各清單與 `/stream` 均連通）；`run_api.py` 58 項檢查全過（不需券商連線）；`run_ui.py` 33 項客戶端檢查全過（存根閘道 + Chromium：含戶口頁自動刷新與不分來源、按來源汇总並點名無返回者、標的頁一次點擊四區同時返回並區分「N 條／無返回／不提供此清單」、請求進行時的讀取提示、標的頁不再有「統一格式輸出」面板（即時清單只按來源分區）、離線 CODES 不分區而以單一表格顯示且欄位順序即接口原樣、離線快照顯示行數與距今時間且過舊以警告色提示、「更新 CODES」只向 `/codes/refresh` 送出且不带市場參數、搜尋零結果且快照過舊時提示按「更新 CODES」） |
-| 量化交易 Web UI `brokery_webui`（上方菜單兩項：「戶口清單」四家戶口與資金同屏；「標的列表」上方為類型／市場／券商篩選、下方為取得的清單，默認富途） | ✅ 可用 | 資料經同一閘道取得（實測 `http://127.0.0.1:8282` 顯示 6 個戶口：futu 2／ib 1／tiger 1／webull 2，15 欄與 `ACCOUNT_COLUMNS` 逐欄一致、缺失值為破折號）；券商選項由能力聲明填充、不提供該品種者標註且不可選，市場選項只由實際返回的 `market` 填充；標的頁另列一行顯示離線 CODES 快照的行數與距今時間（過舊以警告色提示）、「更新離線 CODES」轉發 `/codes/refresh`；`run_webui.py` 36 項檢查全過（存根閘道 + Chromium，不需券商連線） |
-| 量化交易桌面 GUI `brokery_gui`（PySide6：兩個分頁同 Web UI——「戶口清單」與「標的列表」，其中標的列表**上方為該券商原生格式（`raw=True`）、下方為統一格式**，兩張表同一時刻同一篩選條件；界面以 `.ui` 檔分離且檔內不含任何文字；繁體中文／简体中文／English 即時切換，每個語言一個 `.json`） | ✅ 可用 | 與 Web UI 同一閘道、同一口徑（表格欄位由返回的 `columns` 決定、缺失值為破折號、資金欄千分位、券商選項由能力聲明填充且不提供該品種者標註並不可選、市場選項只由實際返回的 `market` 填充）；兩張表按同一請求先統一格式、再 `raw=True` 順序取數（同一閘道同一券商連線，不併發），舊回應不會蓋過新選擇；取數在背景執行緒，界面不因券商連線而凍結；標的頁另列一行顯示離線 CODES 快照的行數與距今時間（過舊以警告色而非錯誤色提示）、「更新離線 CODES」只向 `/codes/refresh` 送出且不带市場參數、切換語言時該行一併重貼；`run_gui.py` 38 項檢查全過（存根閘道 + Qt 離屏，不需券商連線亦不需顯示器） |
+| HTTP/WS 閘道與 dashboard `brokery_api`（自訂 API Key、K 線圖、實時訂閱、戶口（四家同屏、自動更新以秒為單位、預設 0 不更新）、標的（按來源分四區；離線 CODES 按券商各一檔，以單一表格顯示，另列一行顯示該家快照年齡，並有「讀取離線 CODES／更新 CODES」兩個按鈕）、日誌窗、四家連線狀態與延遲、讀取提示） | ✅ 可用 | 四家經同一閘道實測（`/kline`、`/accounts`、`/brokers`、各清單與 `/stream` 均連通）；`run_api.py` 62 項檢查全過（不需券商連線，含 `/codes?broker=` 只讀該家那一檔、兩檔互不覆蓋、未存放時點名要更新的券商）；`run_ui.py` 42 項客戶端檢查全過（存根閘道 + Chromium：含兩頁的自動更新以秒為單位且預設 0 時空轉完全不打請求、按來源汇总並點名無返回者、標的頁一次點擊四區同時返回並區分「N 條／無返回／不提供此清單」、請求進行時的讀取提示、標的頁不再有「統一格式輸出」面板（即時清單只按來源分區）、離線 CODES 不分區而以單一表格顯示且欄位順序即接口原樣、該家快照一行顯示行數與距今時間且過舊以警告色提示、「更新 CODES」只向 `/codes/refresh` 送出且不带市場參數、換券商即改讀該家那一檔（不含別家的行數）、搜尋零結果且快照過舊時提示按「更新 CODES」） |
+| 量化交易 Web UI `brokery_webui`（上方菜單兩項：「戶口清單」四家戶口與資金同屏；「標的列表」上方為類型／市場／券商篩選、下方為取得的清單，默認富途；兩頁均有「自動更新（秒）」，預設 0 即不更新） | ✅ 可用 | 資料經同一閘道取得（實測 `http://127.0.0.1:8282` 顯示 6 個戶口：futu 2／ib 1／tiger 1／webull 2，15 欄與 `ACCOUNT_COLUMNS` 逐欄一致、缺失值為破折號）；券商選項由能力聲明填充、不提供該品種者標註且不可選，市場選項只由實際返回的 `market` 填充；標的頁另列一行顯示**所選券商**離線快照的行數與距今時間（過舊以警告色提示）、「讀取離線 CODES」轉發 `/codes?broker=`、「更新離線 CODES」轉發 `/codes/refresh?broker=`，換券商即改讀該家那一檔；定時更新預設只重讀離線快照，勾上「自動向券商重拉」才向券商取清單；`run_webui.py` 51 項檢查全過（存根閘道 + Chromium，不需券商連線） |
+| 量化交易桌面 GUI `brokery_gui`（PySide6：兩個分頁同 Web UI——「戶口清單」與「標的列表」，其中標的列表**上方為該券商原生格式（`raw=True`）、下方為統一格式**，兩張表同一時刻同一篩選條件；界面以 `.ui` 檔分離且檔內不含任何文字；繁體中文／简体中文／English 即時切換，每個語言一個 `.json`；兩頁均有「自動更新（秒）」，預設 0 即不更新） | ✅ 可用 | 與 Web UI 同一閘道、同一口徑（表格欄位由返回的 `columns` 決定、缺失值為破折號、資金欄千分位、券商選項由能力聲明填充且不提供該品種者標註並不可選、市場選項只由實際返回的 `market` 填充）；兩張表按同一請求先統一格式、再 `raw=True` 順序取數（同一閘道同一券商連線，不併發），舊回應不會蓋過新選擇；取數在背景執行緒，界面不因券商連線而凍結；標的頁另列一行顯示**所選券商**離線快照的行數與距今時間（過舊以警告色而非錯誤色提示）、「讀取離線 CODES」只向 `/codes?broker=` 讀該家那一檔、「更新離線 CODES」只向 `/codes/refresh?broker=` 送出且不带市場參數、換券商即改讀該家那一檔、切換語言時該行一併重貼；定時更新以秒為單位（預設 0 完全不請求，預設只重讀離線快照，勾「自動向券商重拉」才向券商取清單）；`run_gui.py` 52 項檢查全過（存根閘道 + Qt 離屏，不需券商連線亦不需顯示器） |
 | 一次過啟動閘道與 Web UI `run_all.py`（其中一個先結束即停止另一個，Ctrl+C 一併停止） | ✅ 可用 | 實測 `python run_all.py`：兩個端口同時回應、Web UI 可經剛啟動的閘道取數、送 Ctrl+C 後兩個一併退出且端口釋放；`run_launch.py` 7 項檢查全過（存根命令，不需券商連線，亦不真的啟動服務） |
 | K 線串流 `stream_kline`（一條連線同時串流多個代碼） | ✅ 可用 | FUTU 實時推送 + IB `keepUpToDate` + Tiger `subscribe_kline` 原生推送 + Webull 輪詢批量 bar（憑證只開通 HK 行情，美股明確報錯 `market_data_not_subscribed`）；實測 futu/ib/tiger/webull 全部合規格（Tiger 一條連線同時串流港美 3 個代碼；Webull 以 2 個 HK 代碼共用一次輪詢）；推送本身要開市才收得到 |
 
@@ -203,11 +203,12 @@ store.list_stored()                      # 目錄內所有已存放的資料集
 ```
 
 `Brokery.get_code()` 讀回同一份資料，但走統一入口並返回標準信封（未存放時 `status=False` 並在
-`message` 說明先執行邊個腳本），預設讀 `store.CODES_DATASET`（即 `futu_codes`）：
+`message` 說明先執行邊個腳本）。離線 CODES 按券商各存一檔 `<broker>_codes.parquet`，預設讀
+`store.codes_dataset(CODES_SOURCE)`（即 `futu_codes`）：
 
 ```python
 bk.get_code()                            # {'status': True, 'data': 38568 條, 'message': 'ok: 離線讀回 …'}
-bk.get_code("futu_codes")                # 亦可指定資料集名稱
+bk.get_code(broker="ib")                 # 讀 ib 那一檔（ib_codes）
 ```
 離線檢視可直接跑 `python brokery/acceptance/run_get_codes.py`（可帶 `STOCK`/`FUTURE`/`INDEX`
 參數只顯示某一類型），不需要任何連線。IDE 的 parquet 預覽會把字串欄位顯示成位元組數組，屬檢視器
@@ -223,17 +224,25 @@ bk = Brokery()
 bk.get_code_meta()                       # 一行：行數、欄位數、saved_at、age_seconds、stale、last_refresh_error
 bk.refresh_codes()                       # 重拉 DEFAULT_STOCK_MARKETS（HK/US）全量並覆蓋快照；force=True 跳過過舊判斷
 bk.refresh_codes(["HK"])                 # 只拉部分市場（會被下面的縮細防護拒絕，除非 force=True）
+bk.refresh_codes(broker="ib")            # 只更新 ib 那一檔（ib_codes）
 ```
 
-- **縮細防護**：按 `symbol_type` 逐個比較，任何品種少於原本的 `CODES_MIN_KEEP_RATIO`（0.9）即拒絕覆蓋，
-  原因寫進 `message`，快照保持原樣。一次部分市場失敗唔應該把全量快照削走一半。
+- **每家一檔**：`<broker>_codes.parquet`，讀寫與防護都只針對該家。各家的標識体系與能力不同（IB 以
+  conId/ISIN 且不提供股票、Webull 不提供指數），混進同一檔會互相污染，縮細防護亦無法逐家比較。
+- **照能力存放**：快照內容由該適配器聲明的 `capabilities` 決定，不提供即由 `_gather` 明確報錯，不為
+  湊齊而造數；故 `ib_codes` 只有期貨與指數屬正常狀態，並非缺數。
+- **縮細防護**：按 `symbol_type` 逐個比較，任何品種少於同一券商上一份快照的 `CODES_MIN_KEEP_RATIO`
+  （0.9）即拒絕覆蓋，原因寫進 `message`，快照保持原樣。一次部分市場失敗唔應該把全量快照削走一半。
 - **沿用舊快照**：某品種本次取唔到（實測指數清單被拒），該品種沿用舊快照的行，其餘照常更新，
   `message` 說明沿用了幾多條。
 - **失敗也留痕**：失敗原因記進 meta 的 `last_refresh_error`，界面讀回時以警告色提示，唔會靜靜當做成功。
-- **過舊的界限**：`.env` 的 `CODES_MAX_AGE_HOURS`（預設 24）決定 `stale`；閘道啟動時若快照已過舊，
-  會喺背景线程自動重拉一次（`brokery_api/app.py: auto_refresh_codes`），唔阻塞啟動、亦唔放進任何請求。
-- 三個界面（dashboard、Web UI、桌面 GUI）都另列一行顯示快照的行數與距今時間，並有「更新」按鈕轉發
-  `/codes/refresh`；該行與即時取數的統計分開，快照狀態唔會混入各來源的條數。
+- **過舊的界限**：`.env` 的 `CODES_MAX_AGE_HOURS`（預設 24）決定 `stale`；閘道啟動時若 `CODES_SOURCE`
+  （預設 futu）那一檔已過舊，會喺背景线程自動重拉一次（`brokery_api/app.py: auto_refresh_codes`），
+  唔阻塞啟動、亦唔放進任何請求；其餘各家只由用戶在界面按「更新離線 CODES」觸發。
+- 三個界面（dashboard、Web UI、桌面 GUI）都另列一行顯示**所選券商**快照的行數與距今時間，並有兩個按鈕：
+  「讀取離線 CODES」只讀該家那一檔（不打券商，明確標註未向券商取數）、「更新離線 CODES」只向該家重拉；
+  該行與即時取數的統計分開，快照狀態唔會混入各來源的條數。標的頁嘅定時更新預設只重讀離線快照，另有
+  「自動向券商重拉」開關（預設關閉）才改為向券商取清單。
 
 ### 8. K 線
 ```python
@@ -427,9 +436,9 @@ python brokery_api/run.py     # 監聽 .env 的 API_HOST/PORT，開瀏覽器即�
 | `GET /health` | 進程與配置概覽（不需金鑰，供探活） |
 | `GET /capabilities` | 欄位契約、ktype 清單、各券商能力聲明 |
 | `GET /logs?limit=` | 最近日誌（記憶體環形緩衝，新到舊） |
-| `GET /codes` | `get_code`（離線讀回） |
-| `GET /codes/meta` | `get_code_meta`（快照的行數、距今時間、是否過舊、上次更新失敗的原因；離線讀回，不需券商連線） |
-| `GET /codes/refresh` | `refresh_codes`（重拉全量並覆蓋快照；需券商連線，約數秒。不带 `markets` 即全量，只拉部分市場會被縮細防護拒絕） |
+| `GET /codes?broker=` | `get_code`（離線讀回該券商那一檔 `<broker>_codes`；不带 `broker` 即 `CODES_SOURCE`） |
+| `GET /codes/meta?broker=` | `get_code_meta`（該券商快照的行數、距今時間、是否過舊、上次更新失敗的原因；離線讀回，不需券商連線） |
+| `GET /codes/refresh?broker=&markets=` | `refresh_codes`（重拉全量並覆蓋該券商那一檔；需券商連線，約數秒。不带 `markets` 即全量，只拉部分市場會被縮細防護拒絕） |
 | `GET /stocks?markets=&raw=`、`/futures?roots=&raw=`、`/indices?symbols=&raw=`、`/all?markets=&raw=` | 各標的清單 |
 | `GET /convert?code=&source=` | `convert` |
 | `GET /kline?code=&ktype=&count=&broker=&autype=&raw=` | `get_kline` |
@@ -457,8 +466,8 @@ python brokery_api/run.py     # 監聽 .env 的 API_HOST/PORT，開瀏覽器即�
   由 `/brokers` 於頁面載入時探測一次，其後只由「探測連線」按鈕手動觸發（探測會真的向各家發請求，
   故不設定時輪詢）。
 - **戶口頁**：沒有「來源」選擇，一律一次取四家全部戶口（請求不带 `broker` 參數）。進入該頁即取一次，
-  其後每 10 秒自動刷新（只在該頁可見時才請求，可勾選關閉；「取得戶口」手動刷新照樣可用）。頁頂按
-  來源列出各券商的戶口數，沒有返回者點名，避免用戶只見到「少咗一間」而不知原因。
+  其後按「自動更新（秒）」填的間隔重取（只在該頁可見時才請求；**預設 0，即完全不自動請求**；「取得戶口」
+  手動刷新照樣可用）。頁頂按來源列出各券商的戶口數，沒有返回者點名，避免用戶只見到「少咗一間」而不知原因。
 - **標的頁**：即時清單（股票／期貨／指數／全部）按來源分四區同時顯示 —— 一次點擊即四區一起填充
   （後端本来就是一次向各家取齊，不需逐間點），區內不再重複 `source` 欄。每區如實顯示該家狀態：
   「N 條」／「無返回」（理應有份却取不到，如未連線或無行情權限）／「不提供此清單」（該券商本就不提供
@@ -466,10 +475,15 @@ python brokery_api/run.py     # 監聽 .env 的 API_HOST/PORT，開瀏覽器即�
   不可混為一談。個別券商失敗時 `message` 以警告色顯示，結果仍算成功。各區欄位一律為
   `brokers.base.COLUMNS`（8 欄，順序即接口原樣，只去掉區內重複的 `source` 欄）。
 - **離線 CODES**：存放好的快照不涉及即時取數，故不分區，以單一表格顯示（`source` 保留在欄位中）。
-  該頁另列一行顯示快照的行數與距今時間（`/codes/meta`），過舊時以警告色而非錯誤色提示（已存放的資料仍
-  可用）；「更新 CODES」只向 `/codes/refresh` 送出且不带市場參數，完成後原樣顯示更新報告（含各品種增減
-  與沿用舊快照的說明），再重讀快照與表格。本頁是唯一以自由文字搜尋離線快照的界面，故搜尋零結果且快照
-  過舊時會提示按「更新 CODES」——查唔到往往只係快照冇咗新上市的代碼。
+  該頁另列一行顯示**所選券商**那一檔的行數與距今時間（`/codes/meta?broker=`），過舊時以警告色而非錯誤色
+  提示（已存放的資料仍可用）；「讀取離線 CODES」只向 `/codes?broker=` 讀該家那一檔（不打券商）、「更新
+  CODES」只向 `/codes/refresh?broker=` 送出且不带市場參數，完成後原樣顯示更新報告（含各品種增減與沿用
+  舊快照的說明），再重讀快照與表格；換券商即改讀該家那一檔，顯示的只是該家的行數。本頁是唯一以自由文字
+  搜尋離線快照的界面，故搜尋零結果且快照過舊時會提示按「更新 CODES」——查唔到往往只係快照冇咗新上市的
+  代碼。
+- **標的頁的定時更新**：同戶口頁一樣以秒為單位，**預設 0（不請求）**；非 0 時預設只重讀離線快照（不打
+  券商），另有「自動向券商重拉」開關（預設關閉）才改為向券商取清單。請求進行中不會再排下一次，進入該頁
+  或改動秒數即重新計時。
 - **讀取提示**：所有取數（K 線、戶口、標的、日誌、探測）在請求進行時明確顯示「讀取中…」並以強調色
   標示，同時禁用觸發按鈕防止重復送出；較快的請求（如日誌）會延後約 0.4 秒才顯示，避免閃爍。
 - **金鑰記憶**：dashboard 填入的金鑰即時存入瀏覽器 `localStorage`（鍵 `gw_key`），重新載入或重開頁面
@@ -483,7 +497,8 @@ python brokery_api/run.py     # 監聽 .env 的 API_HOST/PORT，開瀏覽器即�
 python brokery_webui/run.py   # 監聽 .env 的 GUI_HOST/GUI_PORT；需先啟動 brokery_api 閘道
 ```
 
-- **只負責頁面與轉發，不連券商**：`/api/accounts`、`/api/capabilities` 與 `/api/symbols` 以 `X-API-Key`
+- **只負責頁面與轉發，不連券商**：`/api/accounts`、`/api/capabilities`、`/api/symbols` 與
+  `/api/codes`、`/api/codes/meta`、`/api/codes/refresh`（一律帶 `broker`，即當前所選券商）以 `X-API-Key`
   轉發閘道的對應接口，信封原樣透傳（`/api/symbols` 按類型轉到 `/stocks`／`/futures`／`/indices`，市場與
   券商原樣傳為 `markets`／`broker`，類型不認識即 `unknown_kind`）。理由在進程層面：閘道已持有各券商連線，IB 更只容許一個 client id，Web UI 再建一份即互相搶佔，
   兩邊都取不到數。金鑰只在 Web UI 服務端使用，不出現在頁面或瀏覽器中。
@@ -497,9 +512,14 @@ python brokery_webui/run.py   # 監聽 .env 的 GUI_HOST/GUI_PORT；需先啟動
   選項由 `/api/capabilities` 的能力聲明填充（默認 futu；不提供該品種者標註原因且不可選，不必按了才知道會
   `type_unsupported`），市場選項只由實際返回行的 `market` 填充，頁面不硬寫券商或市場名單；真正的能力閘在
   `core`，Web UI 不會靜靜改用別家湊數。轉類型時市場重設為全部，選項再由新品种返回的資料重建。
-- **離線 CODES**：標的頁另列一行顯示快照的行數與距今時間（轉發 `/codes/meta`，離線讀回，不需券商連線，
-  故與即時取數的統計分開），過舊或上次更新失敗以警告色提示；「更新離線 CODES」轉發 `/codes/refresh` 且
-  不带市場參數，結果（含各品種增減）原樣顯示。本頁沒有對快照的自由文字搜尋，故不提供「查唔到即提示更新」。
+- **離線 CODES**：標的頁另列一行顯示**所選券商**那一檔的行數與距今時間（轉發 `/codes/meta?broker=`，離線
+  讀回，不需券商連線，故與即時取數的統計分開），過舊或上次更新失敗以警告色提示；「讀取離線 CODES」轉發
+  `/codes?broker=`（只讀該家那一檔，並明確標註未向券商取數）、「更新離線 CODES」轉發 `/codes/refresh?broker=`
+  且不带市場參數，結果（含各品種增減）原樣顯示後重讀該家那一檔的狀態；換券商即改讀該家那一檔。本頁沒有對
+  快照的自由文字搜尋，故不提供「查唔到即提示更新」。
+- **定時更新（秒）**：戶口頁與標的頁各有一個「自動更新（秒）」輸入，**預設 0 即完全不請求**；非 0 時只在
+  該頁可見時才排下一次，請求進行中不會重複送出，進入該頁或改動秒數即重新計時。標的頁的定時更新預設只
+  重讀離線快照，勾上「自動向券商重拉」（預設關閉）才改為向券商取清單。
 - **日誌**：與閘道同一套（級別與目錄由 `API_LOG_LEVEL`/`API_LOG_DIR` 決定），但寫自己的
   `logs/brokery_webui.log`：兩個進程共用同一個滾動檔會在滾動時互相搶佔句柄。
 
@@ -524,9 +544,14 @@ python brokery_gui/run.py     # 閘道地址與金鑰讀自 .env 的 API_HOST/AP
   自帶的欄位），不另設欄位；缺失值顯示破折號、資金欄為千分位兩位小數、按來源統計條數（只統計實際返回者）；券商
   選項由 `/capabilities` 的能力聲明填充（默認 futu，不提供該品種者標註原因且不可選），市場選項只由實際返回行的
   `market` 填充，轉類型即重設為全部。
-- **離線 CODES**：標的頁另列一行顯示快照的行數與距今時間（經 `/codes/meta`，離線讀回，不需券商連線，故與
-  即時取數的統計分開），過舊或上次更新失敗以警告色（`COLOR_WARN`）而非錯誤色提示；「更新離線 CODES」只向
-  `/codes/refresh` 送出且不带市場參數，結果原樣顯示並重讀該行；切換語言時該行一併重貼（重繪不需重新取數）。
+- **離線 CODES**：標的頁另列一行顯示**所選券商**那一檔的行數與距今時間（經 `/codes/meta?broker=`，離線讀回，
+  不需券商連線，故與即時取數的統計分開），過舊或上次更新失敗以警告色（`COLOR_WARN`）而非錯誤色提示；
+  「讀取離線 CODES」只向 `/codes?broker=` 讀該家那一檔、「更新離線 CODES」只向 `/codes/refresh?broker=`
+  送出且不带市場參數，結果原樣顯示並重讀該行；換券商即改讀該家那一檔；該列的文字屬語言鍵，切換語言時一併
+  重貼（重繪不需重新取數）。
+- **定時更新（秒）**：兩個分頁各有一個「自動更新（秒）」數字輸入，**預設 0 即完全不請求**；由一個 1 秒的
+  `QTimer` 統一計時，只對當前分頁觸發，請求進行中（`_inflight`）不再排下一次，切換分頁或改動秒數即重新
+  計時。標的頁的定時更新預設只重讀離線快照，勾上「自動向券商重拉」（預設關閉）才改為向券商取清單。
 - **兩張表順序取數**：同一篩選條件先取統一格式、再帶 `raw=1` 取一次（同一閘道持有各券商連線，IB 只容許一個
   client id，故不併發）；兩張表各自顯示自己的失敗原因，舊回應不會蓋過已改變的篩選條件。
 
@@ -618,9 +643,10 @@ python run_all.py             # 兩個一齊起；只想起一個仍用上面兩
 ```bash
 python brokery/acceptance/run_futu_codes.py         # 全量 CODES：股票 + 期貨 + 指數（需 OpenD）
 python brokery/acceptance/run_futu_codes_store.py   # 取 CODES → 離線存放 → 讀回核對（需 OpenD）
-python brokery/acceptance/run_get_codes.py          # get_code：離線讀回已存放的 CODES，不連 OpenD
+python brokery/acceptance/run_get_codes.py          # get_code：離線讀回已存放的 CODES（預設 futu），不連 OpenD
 python brokery/acceptance/run_get_codes.py FUTURE   # 只顯示某一類型（STOCK/FUTURE/INDEX）
-python brokery/acceptance/run_codes_refresh.py      # refresh_codes 的更新路徑：原子寫入與 .prev 備份、某品種明顯縮細時拒絕覆蓋、某品種本次取不到時沿用舊快照該品種、取數失敗時保留原快照、差額回報、過期判定（CODES_MAX_AGE_HOURS）、閘道只在快照過舊時才在背景自動更新（以存根代替 list_all，不需任何連線；用 acceptance_ 前綴的臨時資料集，跑完即刪，不動到實際快照）
+python brokery/acceptance/run_get_codes.py "" ib    # 讀 ib 那一檔（各券商各一檔）
+python brokery/acceptance/run_codes_refresh.py      # refresh_codes 的更新路徑：按券商各存一檔（<broker>_codes）且互不覆蓋、縮細防護只與同一券商的上一份比較、原子寫入與 .prev 備份、某品種明顯縮細時拒絕覆蓋、某品種本次取不到時沿用舊快照該品種、取數失敗時保留原快照、差額回報、過期判定（CODES_MAX_AGE_HOURS）、閘道只在快照過舊時才在背景自動更新（以存根代替 list_all，不需任何連線；用 acceptance_ 前綴的臨時資料集，跑完即刪，不動到實際快照）
 python brokery/acceptance/run_list_symbols.py      # 四家 × 三品種的標的清單：能力聲明與實測一致、欄位與順序一律為 COLUMNS、字串欄無 NaN、code 為統一代碼、未聲明品種返回 no_source、跨券商合併不重複列；每家再以 raw=True 取一次，核對欄位即該券商自帶的鍵且行數不少於統一格式（需 OpenD + IB + Tiger + Webull）
 python brokery/acceptance/run_list_filter.py       # 清單的 broker 與 markets 兩個參數（core 調度口徑）：只向一家取、unknown_source／type_unsupported、markets 按行過濾、empty_list、省略 markets 用預設市場、一家失敗仍返回別家資料；raw=True 時不做按行的市場過濾（原生行無 market 欄位），市場範圍一律由參數／種子保證（以存根券商進行，不需任何連線）
 python brokery/acceptance/run_raw_frames.py        # raw=True 的契約（以存根適配器進行，不需任何連線）：信封仍三鍵且 data 即原生欄位、非 raw 的 COLUMNS／K_COLUMNS／ACCOUNT_COLUMNS 不變、raw 跳過去重與統一欄位行過濾但取數範圍不變、多來源欄位為首見聯集、失敗時空表無欄位、NativeBars 與 BarMerger 對外語義一致
@@ -633,10 +659,10 @@ python brokery/acceptance/run_stream_kline.py US.NVDA 5m 50 120   # 指定代碼
 python brokery/acceptance/run_kline_matrix.py      # 品種 × 券商矩陣：品種推斷、能力閘（type_unsupported）、復權只對股票有效、指數跨券商對齊；raw=True 的根數與收市價與統一格式逐根相同、時間欄位為該券商自己的寫法（需 OpenD + IB + Tiger）
 python brokery/acceptance/run_get_accounts.py      # 四家戶口與資金：統一欄位、只列真實且已啟用的戶口、幣種有無填到、acc_type/currency/broker 三個參數的邊界、詞表外的戶口性質（IB individual）在篩選時點名說明；每家再以 raw=True 取一次，核對欄位即該券商自帶的戶口記錄、不支持的幣種仍明確報錯、明確 acc_type 一律拒绝（需 OpenD + IB + Tiger + Webull）
 python brokery/acceptance/run_get_brokers.py   # 四家連線狀態與延遲：統一欄位、延遲為正數且戶口數與 get_accounts 一致、連不上為 NaN 並附原因、並行探測、參數邊界（需四家後端在線）
-python brokery/acceptance/run_api.py           # 閘道本身：未設金鑰拒絕啟動、HTTP/WS 鑑權、返回信封與欄位契約、JSON 取值口徑、業務失敗原樣透傳、三個清單接口的 markets／broker 原樣透傳為統一前綴（含 markets 省略時不再拋 TypeError 的回歸檢查）、`/codes/meta` 返回快照元資料欄位（即 CODES_META_COLUMNS）與 `/codes/refresh` 透傳更新結果、六個取數端點與 `/stream` 的 `raw` 原樣透傳、串流協定與日誌遮罩（不需券商連線）
-python brokery/acceptance/run_ui.py            # dashboard 客戶端：以存根閘道 + Chromium 核對腳本無語法錯誤、頂欄四家指示、金鑰記憶與回填、探測只由載入與按鈕觸發、戶口頁自動刷新與按來源汇总、標的頁區分「不提供／無返回」、標的頁不再有「統一格式輸出」面板、離線 CODES 不分區而以單一表格顯示且欄位順序即接口原樣、離線快照一行顯示行數與距今時間且過舊以警告色提示、「更新 CODES」只向 `/codes/refresh` 送出且不带市場參數、完成後原樣顯示結果並重讀快照與表格、搜尋零結果且快照過舊時提示按「更新 CODES」（不需券商連線；需 `playwright install chromium`，未裝即跳過）
-python brokery/acceptance/run_webui.py         # Web UI：以存根閘道核對轉發原樣透傳信封與金鑰只在服務端、金鑰不符與閘道不可達均明確報錯；以 Chromium 核對菜單兩項、欄位即 ACCOUNT_COLUMNS、千分位與破折號、按來源統計；標的頁先取能力聲明再取清單、券商選項由聲明填充且默認 futu（不提供該品種者標註且不可選）、表格欄位即 COLUMNS、市場選項只由返回的 market 填充、選市場與轉類型均向對應接口再取一次、離線 CODES 元資料與更新均原樣轉發（`/codes/refresh` 不带市場參數）、快照一行顯示行數與距今時間且過舊及上次更新失敗以警告色提示、更新結果原樣顯示（含各品種增減）（不需券商連線；未裝 Chromium 即跳過）
-python brokery/acceptance/run_gui.py           # 桌面 GUI（brokery_gui）：以存根閘道 + Qt 離屏核對三個 .ui 檔內不含任何文字、三種語言各一個 .json 且鍵集合一致、切換即時生效且不重建窗口、缺譯返回鍵名、表格欄位即 ACCOUNT_COLUMNS／COLUMNS、缺失值破折號與資金欄千分位、按來源統計、券商選項由能力聲明填充且默認 futu（不提供該品種者標註且不可選）、市場選項只由返回的 market 填充、選市場與轉類型均向對應接口再取一次、標的列表為上下兩張表（上表欄位即閘道 raw=1 返回的該券商自帶欄位、下表仍為 COLUMNS）、同一篩選條件順序取兩次（先統一格式、再同參數 `raw=1`）且舊回應不蓋過新選擇、raw 取不到只寫自己的標籤、離線 CODES 快照一行顯示行數與距今時間且過舊及上次更新失敗以警告色（非錯誤色）提示、「更新離線 CODES」只向 `/codes/refresh` 送出且不带市場參數並重讀該行、切換語言時該行一併重貼、閘道不可達與金鑰不符均明確報錯、直接啟動 `brokery_gui/run.py` 核對窗口會存活（不需券商連線，亦不需顯示器）
+python brokery/acceptance/run_api.py           # 閘道本身：未設金鑰拒絕啟動、HTTP/WS 鑑權、返回信封與欄位契約、JSON 取值口徑、業務失敗原樣透傳、三個清單接口的 markets／broker 原樣透傳為統一前綴（含 markets 省略時不再拋 TypeError 的回歸檢查）、`/codes/meta` 返回快照元資料欄位（即 CODES_META_COLUMNS）與 `/codes/refresh` 透傳更新結果、三個 /codes* 端點按 broker 各讀一檔且兩檔互不覆蓋、六個取數端點與 `/stream` 的 `raw` 原樣透傳、串流協定與日誌遮罩（不需券商連線）
+python brokery/acceptance/run_ui.py            # dashboard 客戶端：以存根閘道 + Chromium 核對腳本無語法錯誤、頂欄四家指示、金鑰記憶與回填、探測只由載入與按鈕觸發、兩頁的自動更新以秒為單位且預設 0 時空轉完全不打請求（設 1 秒即定時重取、改回 0 即停止）、按來源汇总並點名無返回者、標的頁區分「不提供／無返回」、標的頁不再有「統一格式輸出」面板、離線 CODES 不分區而以單一表格顯示且欄位順序即接口原樣、該家快照一行顯示行數與距今時間且過舊以警告色提示、「更新 CODES」只向 `/codes/refresh` 送出且不带市場參數、換券商即改讀該家那一檔（顯示的只是該家的行數）、完成後原樣顯示結果並重讀快照與表格、搜尋零結果且快照過舊時提示按「更新 CODES」（不需券商連線；需 `playwright install chromium`，未裝即跳過）
+python brokery/acceptance/run_webui.py         # Web UI：以存根閘道核對轉發原樣透傳信封與金鑰只在服務端、金鑰不符與閘道不可達均明確報錯；以 Chromium 核對菜單兩項、欄位即 ACCOUNT_COLUMNS、千分位與破折號、按來源統計；標的頁先取能力聲明再取清單、券商選項由聲明填充且默認 futu（不提供該品種者標註且不可選）、表格欄位即 COLUMNS、市場選項只由返回的 market 填充、選市場與轉類型均向對應接口再取一次、離線 CODES 的讀取與更新均按券商原樣轉發（`/codes?broker=` 只讀該家那一檔、`/codes/refresh?broker=` 不带市場參數）、該家快照一行顯示行數與距今時間且過舊及上次更新失敗以警告色提示、換券商即改讀該家那一檔（不含別家的行數）、更新結果原樣顯示（含各品種增減）、兩頁的自動更新以秒為單位且預設 0 時完全不打請求、標的頁定時更新預設只重讀離線快照（勾上「自動向券商重拉」才向券商取清單）（不需券商連線；未裝 Chromium 即跳過）
+python brokery/acceptance/run_gui.py           # 桌面 GUI（brokery_gui）：以存根閘道 + Qt 離屏核對三個 .ui 檔內不含任何文字、三種語言各一個 .json 且鍵集合一致、切換即時生效且不重建窗口、缺譯返回鍵名、表格欄位即 ACCOUNT_COLUMNS／COLUMNS、缺失值破折號與資金欄千分位、按來源統計、券商選項由能力聲明填充且默認 futu（不提供該品種者標註且不可選）、市場選項只由返回的 market 填充、選市場與轉類型均向對應接口再取一次、標的列表為上下兩張表（上表欄位即閘道 raw=1 返回的該券商自帶欄位、下表仍為 COLUMNS）、同一篩選條件順序取兩次（先統一格式、再同參數 `raw=1`）且舊回應不蓋過新選擇、raw 取不到只寫自己的標籤、該家離線快照一行顯示行數與距今時間且過舊及上次更新失敗以警告色（非錯誤色）提示、「讀取離線 CODES」只向 `/codes?broker=` 讀該家那一檔、「更新離線 CODES」只向 `/codes/refresh?broker=` 送出且不带市場參數並重讀該行、換券商即改讀該家那一檔、切換語言時該行一併重貼、兩頁的自動更新以秒為單位且預設 0 時完全不打請求、標的頁定時更新預設只重讀離線快照（勾上「自動向券商重拉」才向券商取清單）、閘道不可達與金鑰不符均明確報錯、直接啟動 `brokery_gui/run.py` 核對窗口會存活（不需券商連線，亦不需顯示器）
 python brokery/acceptance/run_launch.py        # 啟動器 run_all.py：以存根命令核對兩個同時啟動、先結束者停止另一個並返回其退出碼、正常結束返回 0、Ctrl+C 一併停止、預設命令即兩個既有入口、啟動器不引入券商 SDK（不需券商連線，亦不真的啟動服務）
 ```
 測試以腳本方式直接執行（不使用 pytest）：執行後即輸出 `status`、`message` 與完整代碼表，

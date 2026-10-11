@@ -51,7 +51,8 @@ DEFAULT_SOURCES = ("futu", "ib", "tiger", "webull")
 # 預設只取港美兩市：全市場（含滬深日馬澳新加）動輒數萬條，需時自行傳入 markets。
 DEFAULT_STOCK_MARKETS = ("HK", "US")
 
-# 離線快照的唯一來源券商：其他券商的標識体系不同（IB 以 conId/ISIN），混進去只會污染同一份代碼表。
+# 離線 CODES 的預設券商：各券商各存一檔（見 store.codes_dataset），此處只決定省略 broker 時向誰取，
+# 以及閘道啟動時在背景自動更新誰的快照（以富途為準）。
 CODES_SOURCE = "futu"
 
 # 離線快照的元資料欄位：供介面顯示快照年齡與是否需要更新（見 get_code_meta）。
@@ -559,21 +560,26 @@ class Brokery:
 
     # ---------- 離線讀取 ----------
 
-    def get_code(self, name: str = store.CODES_DATASET) -> dict:
-        """讀回已存放的 CODES（parquet）。離線執行，不需要任何券商連線。"""
+    def get_code(self, broker: str = CODES_SOURCE) -> dict:
+        """離線讀回某券商存放的 CODES（parquet），不需要任何券商連線。
+
+        各券商各一檔，故讀 futu 不會混入 IB 的 conId，反之亦然；未存放時明確報錯，不返回空表。
+        """
+        name = store.codes_dataset(broker)
         try:
             frame = store.load_frame(name)
         except StoreError as exc:
-            return _fail(f"{exc}；請先執行 refresh_codes()")
+            return _fail(f"{exc}；請先執行 refresh_codes(broker=\"{broker}\")")
         return {
             "status": True,
             "data": frame,
             "message": f"ok: 離線讀回 {len(frame)} 條 CODES（{name}）",
         }
 
-    def get_code_meta(self, name: str = store.CODES_DATASET) -> dict:
-        """離線快照的元資料：行數、存放時間、距今秒數、是否過舊、上次更新失敗的原因。
+    def get_code_meta(self, broker: str = CODES_SOURCE) -> dict:
+        """某券商離線快照的元資料：行數、存放時間、距今秒數、是否過舊、上次更新失敗的原因。
         離線執行，不需要任何券商連線。"""
+        name = store.codes_dataset(broker)
         try:
             meta = store.load_meta(name)
         except StoreError as exc:
@@ -595,19 +601,21 @@ class Brokery:
             "message": f"ok: 快照 {row['rows']} 條，存放於 {row['saved_at'] or '未知時間'}",
         }
 
-    def refresh_codes(self, markets: Iterable[str] | None = None, *, force: bool = False) -> dict:
-        """重拉全量 CODES 並更新離線快照；失敗或某品種明顯縮細時保留原快照，不寫入。
+    def refresh_codes(self, markets: Iterable[str] | None = None, *,
+                      broker: str = CODES_SOURCE, force: bool = False) -> dict:
+        """向某券商重拉全量 CODES 並更新該券商的離線快照；失敗或某品種明顯縮細時保留原快照。
 
-        快照只由富途構成（資料集即 store.CODES_DATASET，meta.source 記為 futu），故這裡固定只向
-        futu 取：其他券商的標識体系不同（IB 以 conId/ISIN），混進去只會污染同一份代碼表。
+        每家券商一檔（store.codes_dataset），互不覆蓋：各家的標識体系與能力不同（IB 以 conId/ISIN，
+        且不提供股票），混進同一檔只會互相污染。快照內容由該適配器聲明的能力決定，不提供即由
+        _gather 明確報錯，不為湊齊而造數；縮細防護與沿用舊快照只與同一券商的舊快照比較。
         成功時 data 為更新後的快照元資料（見 get_code_meta），不返回全量行：數萬條已由 get_code
         離線讀回（實測 0.03s），在這裡再帶一次只是把同一份資料搬兩遍。
         """
         markets = tuple(markets) if markets else DEFAULT_STOCK_MARKETS
-        name = store.CODES_DATASET
-        result = self.list_all(markets, broker=CODES_SOURCE)
+        name = store.codes_dataset(broker)
+        result = self.list_all(markets, broker=broker)
         if not result["status"]:
-            self._note_codes_error(f"failed: {result['message']}")
+            self._note_codes_error(broker, f"failed: {result['message']}")
             return _fail(f"更新失敗：{result['message']}；已保留原快照")
 
         try:
@@ -617,13 +625,13 @@ class Brokery:
         fresh, carried = _codes_carry_over(previous, result["data"])
         reason = _codes_shrink(previous, fresh)
         if reason and not force:
-            self._note_codes_error(f"rejected: {reason}")
+            self._note_codes_error(broker, f"rejected: {reason}")
             return _fail(f"拒絕更新：{reason}；已保留原快照，必要時用 force=True")
 
         parts = [text for text in (carried, _codes_diff(previous, fresh)) if text]
-        path = store.save_frame(name, fresh, source=CODES_SOURCE,
-                                note=f"{'/'.join(markets)} 全量 CODES")
-        meta = self.get_code_meta(name)
+        path = store.save_frame(name, fresh, source=broker,
+                                note=f"{broker} 的 {'/'.join(markets)} CODES（只含其聲明的品種）")
+        meta = self.get_code_meta(broker)
         return {
             "status": True,
             "data": meta["data"],
@@ -631,10 +639,10 @@ class Brokery:
         }
 
     @staticmethod
-    def _note_codes_error(message: str) -> None:
-        """把更新失敗記進快照的 meta；尚未有快照時沒有 meta，略過。"""
+    def _note_codes_error(broker: str, message: str) -> None:
+        """把更新失敗記進該券商快照的 meta；尚未有快照時沒有 meta，略過。"""
         try:
-            store.update_meta(store.CODES_DATASET, last_refresh_error=message)
+            store.update_meta(store.codes_dataset(broker), last_refresh_error=message)
         except StoreError:
             pass
 

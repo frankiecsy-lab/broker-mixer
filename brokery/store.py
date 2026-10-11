@@ -19,8 +19,15 @@ META_SUFFIX = ".meta.json"
 PREV_SUFFIX = ".prev"
 TMP_SUFFIX = ".tmp"
 
-# 代碼清單的資料集名稱（由 run_futu_codes_store.py 寫入，Brokery.get_code 預設讀此檔）
-CODES_DATASET = "futu_codes"
+# 離線 CODES 按券商各存一檔 <broker>_codes.parquet：各家的標識体系與能力不同（IB 以 conId/ISIN，
+# 且不提供股票），混進同一檔只會互相污染，也令縮細防護無法逐家比較。
+CODES_SUFFIX = "_codes"
+
+
+def codes_dataset(broker: str) -> str:
+    """某券商離線 CODES 的資料集名稱（富途即 futu_codes）。"""
+    return f"{broker}{CODES_SUFFIX}"
+
 
 
 class StoreError(RuntimeError):

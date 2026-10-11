@@ -29,6 +29,8 @@
   .bar label { display:inline-flex; gap:6px; align-items:center; color:var(--dim); font-size:12px; }
   select { background:#0f1318; color:var(--fg); border:1px solid var(--line); border-radius:4px;
            font:inherit; padding:5px 8px; }
+  input.num { width:64px; background:#0f1318; color:var(--fg); border:1px solid var(--line);
+              border-radius:4px; font:inherit; padding:5px 6px; }
   .chip b { font-weight:600; } .chip i { color:var(--dim); font-style:normal; }
   .msg { color:var(--dim); margin:8px 0; }
   .msg.err { color:var(--up); }
@@ -59,6 +61,9 @@
   <section id="page-accounts" class="active">
     <div class="bar">
       <button class="act" id="a-refresh">重新整理</button>
+      <!-- 自動更新以秒為單位，0 即不自動更新（預設）：戶口數目少但每次都要向各家取數，
+           預設不自動打券商，避免頁面在背景持續佔用連線。 -->
+      <label>自動更新（秒）<input type="number" id="a-interval" class="num" min="0" step="5" value="0"></label>
       <span id="a-sources"></span>
     </div>
     <div class="msg" id="a-msg"></div>
@@ -78,12 +83,17 @@
       <label>市場<select id="s-market"><option value="">全部</option></select></label>
       <label>券商<select id="s-broker"></select></label>
       <button class="act" id="s-refresh">取得</button>
+      <!-- 自動更新同樣以秒為單位，0 即不自動更新（預設）。未選「自動向券商重拉」時，定時器只重讀
+           離線快照（不打券商）；選上才定時向券商即時重取清單。 -->
+      <label>自動更新（秒）<input type="number" id="s-interval" class="num" min="0" step="5" value="0"></label>
+      <label><input type="checkbox" id="s-live">自動向券商重拉</label>
       <span id="s-sources"></span>
     </div>
     <!-- 離線 CODES 快照另列一列：本頁的清單是即時取數，快照只是存放中的代碼表（供搜尋與離線查看），
-         兩者含義不同，不可混在同一個統計裡。 -->
+         兩者含義不同，不可混在同一個統計裡。快照按券商各存一檔，故此列只講所選券商那一檔。 -->
     <div class="bar">
       <span id="s-snapshot" class="msg"></span>
+      <button class="act" id="s-codes-load">讀取離線 CODES</button>
       <button class="act" id="s-codes-refresh">更新離線 CODES</button>
     </div>
     <div class="msg" id="s-msg"></div>
@@ -136,8 +146,19 @@ function renderCounts(el, data, unit) {
     .map(([src, n]) => `<span class="chip"><b>${esc(src)}</b><i>${n} ${unit}</i></span>`).join('');
 }
 
-// 取數並顯示：兩個頁面同一流程，差別只在接口與單位。失敗原因一律原樣顯示，不自行改寫或掩飾。
+let inFlight = 0;   // 進行中的請求數：定時更新只在沒有在途請求時觸發，避免慢請求疊加
+
 async function loadInto(msgEl, tableEl, countEl, unit, url, busy) {
+  inFlight++;
+  try {
+    return await request(msgEl, tableEl, countEl, unit, url, busy);
+  } finally {
+    inFlight--;
+  }
+}
+
+// 取數並顯示：兩個頁面同一流程，差別只在接口與單位。失敗原因一律原樣顯示，不自行改寫或掩飾。
+async function request(msgEl, tableEl, countEl, unit, url, busy) {
   setMsg(msgEl, busy || '讀取中…', 'busy');
   let body;
   try {
@@ -215,8 +236,19 @@ async function loadSymbols() {
   renderMarkets();
 }
 
+// 讀取離線 CODES：只讀所選券商存放的那一檔（實測 0.03s），不向券商取數，因此不需要連線。各券商各一檔，
+// 內容由該家聲明的能力決定（不提供股票者只有期貨與指數），故讀 futu 不會混入別家的 conId。
+async function loadOfflineCodes() {
+  const broker = $('s-broker').value || 'futu';
+  const body = await loadInto($('s-msg'), $('s-table'), $('s-sources'), '條',
+                              `/api/codes?broker=${encodeURIComponent(broker)}`,
+                              `離線讀取 ${broker} 的 CODES…`);
+  if (body && body.status) setMsg($('s-msg'), `${body.message}（離線讀取，未向券商取數）`);
+  return body;
+}
+
 // 離線 CODES 快照的狀態：經 /api/codes/meta 轉發閘道，離線執行，不需要任何券商連線。快照往往是
-// 唯一的離線副本，過舊時會查唔到新上市的代碼，故以警告色標示並提示可更新。
+// 唯一的離線副本，過舊時會查唔到新上市的代碼，故以警告色標示並提示可更新。按券商分檔，故只講所選那家。
 let snapshot = null;
 
 function ageText(seconds) {
@@ -229,27 +261,29 @@ function ageText(seconds) {
 
 async function loadSnapshotMeta() {
   const el = $('s-snapshot');
+  const broker = $('s-broker').value || 'futu';
   let body;
   try {
-    body = await (await fetch('/api/codes/meta')).json();
+    body = await (await fetch(`/api/codes/meta?broker=${encodeURIComponent(broker)}`)).json();
   } catch (err) {
-    setMsg(el, `讀取離線 CODES 狀態失敗：${err}`, 'err');
+    setMsg(el, `讀取 ${broker} 的離線 CODES 狀態失敗：${err}`, 'err');
     return;
   }
-  if (!body.status) { snapshot = null; setMsg(el, `離線 CODES：${body.message}`, 'err'); return; }
+  if (!body.status) { snapshot = null; setMsg(el, `${broker} 的離線 CODES：${body.message}`, 'err'); return; }
   const cols = body.data.columns || [], row = (body.data.rows || [])[0] || [];
   snapshot = Object.fromEntries(cols.map((c, i) => [c, row[i]]));
-  setMsg(el, `離線 CODES：${snapshot.rows} 條 · ${ageText(snapshot.age_seconds)}`
+  setMsg(el, `${broker} 的離線 CODES：${snapshot.rows} 條 · ${ageText(snapshot.age_seconds)}`
          + (snapshot.last_refresh_error ? ' · 上次更新失敗' : ''),
          snapshot.stale || snapshot.last_refresh_error ? 'warn' : '');
 }
 
 async function refreshCodes() {
   const btn = $('s-codes-refresh');
+  const broker = $('s-broker').value || 'futu';
   btn.disabled = true;   // 重拉需數秒，期間不可重覆送出
-  setMsg($('s-msg'), '更新離線 CODES 中…（需券商連線，約數秒）', 'busy');
+  setMsg($('s-msg'), `向 ${broker} 重拉 CODES 並更新其離線快照中…（需券商連線，約數秒）`, 'busy');
   try {
-    const body = await (await fetch('/api/codes/refresh')).json();
+    const body = await (await fetch(`/api/codes/refresh?broker=${encodeURIComponent(broker)}`)).json();
     // 失敗原因原樣顯示（例如某品種明顯縮細而拒絕覆蓋）：用戶需要知道快照並未改變。
     setMsg($('s-msg'), body.message, body.status ? '' : 'err');
   } catch (err) {
@@ -263,8 +297,30 @@ async function refreshCodes() {
 function show(page) {
   document.querySelectorAll('#menu button').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
   document.querySelectorAll('main section').forEach((s) => s.classList.toggle('active', s.id === 'page-' + page));
+  lastAuto[page] = Date.now() / 1000;   // 切換頁面即重新計時，不讓剛開啟就補打一次
   if (page === 'accounts') loadAccounts();
-  if (page === 'symbols') { loadBrokers().then(loadSymbols); loadSnapshotMeta(); }
+  // 先取能力聲明，券商選項填好後才讀快照與清單：兩者都以所選券商為準。
+  if (page === 'symbols') loadBrokers().then(() => { loadSymbols(); loadSnapshotMeta(); });
+}
+
+// 自動更新：秒數為 0 即不自動更新（預設）。只更新當前可見的頁面，且不在有請求在途時觸發。
+// 標的列表的定時更新預設只重讀離線快照（不打券商）；選上「自動向券商重拉」才定時向券商即時重取。
+const lastAuto = { accounts: 0, symbols: 0 };
+
+function intervalSeconds(id) {
+  return Math.max(0, Number($(id).value) || 0);
+}
+
+function tick() {
+  const page = document.querySelector('#menu button.active').dataset.page;
+  const gap = intervalSeconds(page === 'accounts' ? 'a-interval' : 's-interval');
+  if (!gap || inFlight) return;
+  const now = Date.now() / 1000;
+  if (now - lastAuto[page] < gap) return;
+  lastAuto[page] = now;
+  if (page === 'accounts') loadAccounts();
+  else if ($('s-live').checked) loadSymbols();
+  else loadOfflineCodes();
 }
 
 // 轉類型時清空市場選項：各品種返回的市場不同，留著上一品種的市場只會白得一個 empty_list。
@@ -278,10 +334,16 @@ function switchKind() {
 document.querySelectorAll('#menu button').forEach((b) => b.addEventListener('click', () => show(b.dataset.page)));
 $('a-refresh').addEventListener('click', loadAccounts);
 $('s-refresh').addEventListener('click', loadSymbols);
+$('s-codes-load').addEventListener('click', loadOfflineCodes);
 $('s-codes-refresh').addEventListener('click', refreshCodes);
 $('s-kind').addEventListener('change', switchKind);
 $('s-market').addEventListener('change', loadSymbols);
-$('s-broker').addEventListener('change', loadSymbols);
+// 換券商即換了一檔快照：清單、市場選項與快照狀態都要跟著改，否則顯示的是另一家的代碼表。
+$('s-broker').addEventListener('change', () => { loadSymbols(); loadSnapshotMeta(); });
+// 改秒數後由現在重新計時；填 0 即停止自動更新。
+$('a-interval').addEventListener('input', () => { lastAuto.accounts = Date.now() / 1000; });
+$('s-interval').addEventListener('input', () => { lastAuto.symbols = Date.now() / 1000; });
+setInterval(tick, 1000);
 show('accounts');
 </script>
 </body>

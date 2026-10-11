@@ -10,9 +10,14 @@
   返回的 market 填充、轉類型即轉到對應接口並重設為全部市場；
 * 標的頁分上下兩表：下表為統一格式（COLUMNS），上表為該券商自帶欄位；兩者以同一接口順序取兩次（第二次帶
   raw=1），上表的原因只寫在自己的標籤，不影響下表與狀態列；
-* 標的頁另列一行顯示離線 CODES 快照的行數與距今時間（轉發 /codes/meta，離線讀回，不需券商連線；過舊與
-  上次更新失敗以警告色而非錯誤色提示，因已存放的資料仍可用）；「更新離線 CODES」只向 /codes/refresh 送出
-  且不带市場參數（快照即全量），完成後重讀該行；切換語言時該行一併重貼，不需重新取數；
+* 標的頁另列一行顯示離線 CODES 快照的行數與距今時間，並點名是哪一家的檔（轉發 /codes/meta?broker=，離線讀回，
+  不需券商連線；過舊與上次更新失敗以警告色而非錯誤色提示，因已存放的資料仍可用）；「讀取離線 CODES」只向
+  /codes?broker= 送出並填下表（離線快照只有統一格式，故上表清空並說明原因）；「更新離線 CODES」只向
+  /codes/refresh?broker= 送出且不带市場參數（快照即全量），完成後重讀該行；換券商即改讀該家的檔；切換語言時
+  該行一併重貼，不需重新取數；
+* 自動更新以秒數設定（QSpinBox），0 即不更新且為預設：為 0 時等兩秒不會多送任何請求；設為 1 秒後戶口頁會
+  定時重取戶口；標的頁預設只重讀離線快照（不打券商），勾上「自動向券商重拉」才定時重取清單；定時器只針對
+  當前分頁，且有在途請求時不觸發；
 * 閘道不可達與金鑰不正確均明確報錯（狀態列為取數失敗、原因原樣顯示）；未設 API_KEY 即拒絕建立客戶端；
 * `brokery_gui/run.py` 啟動後窗口會一直存活（頂層窗口無父，啟動腳本若不持有引用即被解構、事件循環 abort）。
 
@@ -75,6 +80,16 @@ CODES_META_ROWS = [["futu_codes", 38569, 8, "2026-10-10T10:00:00+00:00", 90000.0
                    "HK/US 全量 CODES", "futu: OpenD 未連接"]]
 CODES_REFRESH = {"status": True, "data": {"columns": list(CODES_META_COLUMNS), "rows": CODES_META_ROWS},
                  "message": "ok: 已更新 38569 條 CODES（FUTURE 14079（+0），INDEX 740（+0），STOCK 23750（+0））"}
+# 離線存放的 CODES 就是統一格式的行（欄位契約同 COLUMNS），沒有券商自帶欄位：這正是「讀取離線 CODES」後
+# 上表必須清空並說明原因的原因。
+CODES_ROWS = SYMBOL_ROWS + [["US.VIX", "VIX 波動率指數", "US", "VIX", "INDEX", "USD", "CBOE", "futu"]]
+
+
+def codes_meta_rows(broker: str) -> list:
+    """某券商那一檔的元資料：行數與上次失敗原因逐家不同（ib 只有期貨與指數，故行數明顯較少且沒有留痕）。
+    距今一律 90000 秒（→「1 天前」）並標為過舊，要驗的正是「過舊以警告色而非錯誤色提示」。"""
+    return [[f"{broker}_codes", 14819 if broker == "ib" else 38569, 8, "2026-10-10T10:00:00+00:00", 90000.0,
+             True, broker, "HK/US 全量 CODES", "futu: OpenD 未連接" if broker == "futu" else ""]]
 
 
 class Stub(BaseHTTPRequestHandler):
@@ -106,9 +121,14 @@ class Stub(BaseHTTPRequestHandler):
         elif path == "/accounts":
             body, code = {"status": True, "data": {"columns": ACCOUNT_COLUMNS, "rows": ACCOUNT_ROWS},
                           "message": MESSAGE}, 200
+        elif path == "/codes":
+            body, code = {"status": True, "data": {"columns": COLUMNS, "rows": CODES_ROWS},
+                          "message": f"ok: 離線讀回 {len(CODES_ROWS)} 條 CODES"}, 200
         elif path == "/codes/meta":
+            # 各券商各一檔：行數與留痕逐家不同，界面若把別家的數字留在當前券商那一行即會被發現。
+            broker = dict(p.split("=", 1) for p in (self.path.split("?")[1:] or [""])).get("broker", "")
             body, code = {"status": True, "data": {"columns": list(CODES_META_COLUMNS),
-                                                   "rows": CODES_META_ROWS}, "message": "ok"}, 200
+                                                   "rows": codes_meta_rows(broker)}, "message": "ok"}, 200
         elif path == "/codes/refresh":
             body, code = CODES_REFRESH, 200
         else:
@@ -139,6 +159,26 @@ def pump(qt, gui, seconds: int = 20) -> bool:
     for _ in range(5):  # 讓已排入隊列的信號先送達
         qt.processEvents()
     return not gui._jobs
+
+
+def pump_for(qt, seconds: float) -> None:
+    """空轉一段短時間（事件循環照常跑）：用來證明 0 秒設定下定時器確實沒有送出請求。"""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        qt.processEvents()
+        time.sleep(0.05)
+
+
+def wait_until(qt, predicate, seconds: float = 8.0) -> bool:
+    """等某個條件成立（定時器按秒觸發，不能只 processEvents 一次）：有上限，超時即回報，不無限等待。"""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        qt.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.05)
+    qt.processEvents()
+    return bool(predicate())
 
 
 def headers(table) -> list[str]:
@@ -206,6 +246,22 @@ def main() -> dict:
     check("個別券商失敗時原因原樣顯示且以警告色提示", "注意" in gui.accounts.messageLabel.text()
           and "b26a00" in gui.accounts.messageLabel.styleSheet(), gui.accounts.messageLabel.text()[:40])
 
+    # 自動更新以秒為單位，0 即不更新且為預設：用戶要的是「唔好偷偷打券商」，預設必須是 0。
+    check("戶口頁有自動更新秒數設定，最小 0 且預設為 0",
+          gui.accounts.autoIntervalSpin.value() == 0 and gui.accounts.autoIntervalSpin.minimum() == 0
+          and gui.accounts.autoIntervalLabel.text() == "自動更新（秒）",
+          f"{gui.accounts.autoIntervalSpin.value()} 秒／{gui.accounts.autoIntervalLabel.text()}")
+    Stub.queries.clear()
+    pump_for(qt, 2.0)
+    check("秒數為 0 時不會定時重取（空轉兩秒沒有新請求）", not Stub.queries, ",".join(Stub.queries))
+    gui.accounts.autoIntervalSpin.setValue(1)
+    check("設為 1 秒後戶口頁會定時重取",
+          wait_until(qt, lambda: "/accounts" in Stub.queries), ",".join(Stub.queries))
+    Stub.queries.clear()
+    gui.accounts.autoIntervalSpin.setValue(0)
+    pump_for(qt, 2.0)
+    check("改回 0 即停止定時重取", not Stub.queries, ",".join(Stub.queries))
+
     gui.window.tabs.setCurrentIndex(1)
     pump(qt, gui)
     # 快照狀態與清單無關（離線讀回，不需券商連線），進入該頁時兩者同時送出，順序不作要求。
@@ -264,13 +320,72 @@ def main() -> dict:
     Stub.queries.clear()
     gui.symbols.codesRefreshButton.click()
     pump(qt, gui)
-    check("「更新離線 CODES」只向 /codes/refresh 送出（不带市場參數）",
-          [q for q in Stub.queries if q.startswith("/codes")] == ["/codes/refresh", "/codes/meta"],
+    check("「更新離線 CODES」只向所選券商的 /codes/refresh 送出（不带市場參數）",
+          [q for q in Stub.queries if q.startswith("/codes")] == ["/codes/refresh?broker=futu",
+                                                                  "/codes/meta?broker=futu"],
           ",".join(Stub.queries))
     check("更新的結果原樣顯示（含各品種增減），並重讀快照一行",
           "已更新 38569 條 CODES" in gui.symbols.messageLabel.text()
-          and "38569" in gui.symbols.codesLabel.text()
+          and "futu 的離線 CODES：38569" in gui.symbols.codesLabel.text()
           and gui.symbols.codesRefreshButton.isEnabled(), gui.symbols.messageLabel.text()[:60])
+
+    # 讀取離線 CODES：只讀該家存放的一檔，不打券商；快照只有統一格式，故上表清空並說明原因。
+    Stub.queries.clear()
+    gui.symbols.codesLoadButton.click()
+    pump(qt, gui)
+    check("「讀取離線 CODES」只向 /codes 送出並帶所選券商",
+          Stub.queries == ["/codes?broker=futu"], ",".join(Stub.queries))
+    check("離線讀回後下表為統一格式的 CODES，上表清空並說明原因",
+          headers(gui.symbols.symbolsTable) == COLUMNS
+          and gui.symbols.symbolsTable.rowCount() == len(CODES_ROWS) and gui.symbols.rawTable.rowCount() == 0
+          and "不含券商自帶的原始欄位" in gui.symbols.rawMessageLabel.text(),
+          f"下 {gui.symbols.symbolsTable.rowCount()} 行／上 {gui.symbols.rawTable.rowCount()} 行")
+    check("離線讀取明確標明未向券商取數", "離線讀取，未向券商取數" in gui.symbols.messageLabel.text(),
+          gui.symbols.messageLabel.text()[:60])
+
+    # 各券商各一檔：換券商即改讀這一檔，不能把別家的行數留在當前券商那一行。
+    Stub.queries.clear()
+    broker_combo.setCurrentIndex(broker_combo.findData("ib"))
+    pump(qt, gui)
+    check("換券商即改向該家取清單並改讀該家的快照",
+          sorted(Stub.queries) == sorted(["/indices?broker=ib", "/indices?broker=ib&raw=1",
+                                          "/codes/meta?broker=ib"]), ",".join(Stub.queries))
+    check("快照一行改點名當前券商並顯示該家自己的行數與留痕",
+          gui.symbols.codesLabel.text().startswith("ib 的離線 CODES：14819")
+          and "38569" not in gui.symbols.codesLabel.text()
+          and "上次更新失敗" not in gui.symbols.codesLabel.text(), gui.symbols.codesLabel.text())
+    Stub.queries.clear()
+    gui.symbols.codesRefreshButton.click()
+    pump(qt, gui)
+    check("「更新離線 CODES」只重拉當前所選券商那一檔",
+          [q for q in Stub.queries if q.startswith("/codes")] == ["/codes/refresh?broker=ib",
+                                                                  "/codes/meta?broker=ib"],
+          ",".join(Stub.queries))
+
+    # 標的頁的定時更新：預設只重讀離線快照（不打券商），勾開關才向券商重取清單。
+    check("標的頁有自動更新秒數設定與「自動向券商重拉」開關，預設 0 秒且不勾",
+          gui.symbols.autoIntervalSpin.value() == 0 and not gui.symbols.liveRefreshCheck.isChecked()
+          and gui.symbols.autoIntervalLabel.text() == "自動更新（秒）"
+          and gui.symbols.liveRefreshCheck.text() == "自動向券商重拉",
+          f"{gui.symbols.autoIntervalSpin.value()} 秒／{gui.symbols.liveRefreshCheck.text()}")
+    Stub.queries.clear()
+    gui.symbols.autoIntervalSpin.setValue(1)
+    check("標的頁定時更新預設只重讀離線快照（不打券商）",
+          wait_until(qt, lambda: any(q.startswith("/codes?broker=ib") for q in Stub.queries))
+          and not any(q.startswith("/indices") for q in Stub.queries), ",".join(Stub.queries))
+    Stub.queries.clear()
+    gui.symbols.liveRefreshCheck.setChecked(True)
+    check("勾上「自動向券商重拉」後定時更新改為向該家重取清單",
+          wait_until(qt, lambda: any(q.startswith("/indices?broker=ib") for q in Stub.queries)),
+          ",".join(Stub.queries))
+    # 重拉是「清單＋原始」兩趟，第二趟在首趟回應後才送出：兩趟都送達才清單，否則會把尾巴誤判為仍在定時更新。
+    wait_until(qt, lambda: any(q.endswith("&raw=1") for q in Stub.queries))
+    pump(qt, gui)
+    Stub.queries.clear()
+    gui.symbols.liveRefreshCheck.setChecked(False)
+    gui.symbols.autoIntervalSpin.setValue(0)
+    pump_for(qt, 2.0)
+    check("標的頁改回 0 秒即停止定時更新", not Stub.queries, ",".join(Stub.queries))
 
     for language, tab0, kind0 in (("zh-Hans", "户口清单", "股票"), ("en", "Accounts", "Stocks")):
         gui.set_language(language)
@@ -279,7 +394,7 @@ def main() -> dict:
               gui.window.tabs.tabText(0) == tab0 and gui.symbols.kindCombo.itemText(0) == kind0
               and id(gui.window) == window_id, gui.window.tabs.tabText(0))
     check("切換語言後快照一行一併重貼（重貼標籤即重繪快照狀態，不需重新取數）",
-          gui.symbols.codesLabel.text().startswith("Offline CODES"), gui.symbols.codesLabel.text())
+          gui.symbols.codesLabel.text().startswith("ib offline CODES"), gui.symbols.codesLabel.text())
     check("界面用到的鍵在三種語言下均無缺譯", gui.tr.missing == [], ",".join(gui.tr.missing))
 
     down = DesktopGui(GatewayClient(base_url=f"http://127.0.0.1:{free_port()}", api_key=KEY))
@@ -313,8 +428,9 @@ def main() -> dict:
         return {"status": False, "data": None, "message": "失敗：" + "；".join(failed)}
     return {"status": True, "data": None,
             "message": f"{len(checks)} 項檢查全過：.ui 不含文字、三種語言鍵集合一致且即時切換、表格欄位即欄位契約、"
-                       "缺失值破折號、券商選項由能力聲明填充、市場選項只由返回值填充、離線 CODES 快照年齡與"
-                       "更新按鈕正常、閘道不可達與金鑰不正確均明確報錯"}
+                       "缺失值破折號、券商選項由能力聲明填充、市場選項只由返回值填充、離線 CODES 按券商各一檔"
+                       "（讀取／更新兩個按鈕均只針對當前券商）、自動更新秒數預設 0 且 0 即不更新、"
+                       "閘道不可達與金鑰不正確均明確報錯"}
 
 
 if __name__ == "__main__":

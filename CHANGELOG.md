@@ -526,3 +526,22 @@
   統一為「天前」；`ui.html` 嘅 `refreshCodes()` 先 `note()` 再 `loadCodes()`，更新報告即時被重讀表格嘅訊息蓋掉，
   改為重讀後把報告還原返上去。
 - 三個 `.ui` 檔仍不含任何文字、三種語言鍵集合仍一致（新增 `symbols.codes_*` 與 `age.*` 十個鍵）。
+
+### 變更（離線 CODES 按券商各存一檔；自動更新改為以秒為單位）
+- `store.CODES_DATASET`（單檔 `futu_codes`）改為 `store.codes_dataset(broker)`，即每家一檔 `<broker>_codes`。
+  原因有兩：各家的標識系統不同（IB 以 conId/ISIN 為主），混進同一檔會互相污染；而各家能力不同，單檔無法逐家做縮細防護。
+  既有 `futu_codes.parquet` 正好等於新方案為 futu 產生嘅檔名，故唔需要遷移。
+- `get_code()` / `get_code_meta()` / `refresh_codes()` 嘅參數由資料集名改為 `broker`（預設 `CODES_SOURCE`）；
+  閘道 `/codes`、`/codes/meta`、`/codes/refresh` 一律新增 `?broker=`，Web UI 新增 `/api/codes` 轉發（一律帶當前所選券商）。
+  `CODES_SOURCE` 保留，語義收窄為「唔指定時嘅券商」同唯一喺啟動時自動重拉嘅一檔，其餘各家只由用戶喺界面觸發。
+- 縮細防護改為只與**同一券商**嘅上一份快照比較；快照內容完全由該適配器聲明嘅 `capabilities` 決定
+  （`ib_codes` 只有期貨與指數、`webull_codes` 只有股票與期貨屬正常），唔為湊齊而造數。
+- 三個界面嘅標的頁新增「讀取離線 CODES／更新離線 CODES」兩個按鈕，一律作用於當前所選券商；換券商即改讀該家那一檔。
+- 自動更新由固定 10 秒改為可填秒數，**預設 0 即完全唔自動請求**。三個界面共用同一個 1 秒 tick：讀當前頁、
+  讀秒數（0 即返回）、`inFlight > 0` 即跳過、以 `lastAuto[頁]` 計時；進入該頁或修改秒數即重置計時。
+  標的頁嘅定時更新預設只重讀離線快照（0.03s，唔產生券商請求），另有「自動向券商重拉」開關（預設關閉）。
+- 驗收：`run_codes_refresh.py` 22 → 30 項（兩家各一檔互不覆蓋、縮細防護逐家比較）；`run_ui.py` 33 → 42、
+  `run_webui.py` 36 → 51、`run_gui.py` 38 → 52（存根按券商給唔同行數，界面顯示錯券商即即刻失敗）；
+  `run_api.py` 自建 `apitest` 臨時快照並喺 `finally` 清理，以證兩檔互不覆蓋。
+- 語言檔三份鍵集合仍一致（現為 44 個，新增 `accounts.auto_interval`、`symbols.auto_interval`、`symbols.live_refresh`
+  與 `symbols.codes_load*`）；`.ui` 檔仍不含任何文字。

@@ -95,7 +95,8 @@
     <div><label>戶口性質</label><select id="a-type"><option value="all">全部</option></select></div>
     <div><label>幣種</label><input id="a-currency" size="6" placeholder="不限"></div>
     <button id="a-load">取得戶口</button>
-    <label><input id="a-auto" type="checkbox" checked> 自動更新（10 秒）</label>
+    <!-- 自動更新以秒為單位，0 即不自動更新（預設）：一次取得要跨四家取數，預設不喺背景持續打券商。 -->
+    <label>自動更新（秒）<input id="a-interval" type="number" min="0" step="5" value="0" style="width:64px"></label>
     <span id="a-at" class="msg"></span>
   </div>
   <div id="a-sources" class="bar"></div>
@@ -109,10 +110,15 @@
     <button data-list="futures">期貨清單</button>
     <button data-list="indices">指數清單</button>
     <button data-list="all">全部</button>
-    <button data-list="codes">離線 CODES</button>
-    <button id="c-refresh" title="重拉全量 CODES 並覆蓋離線快照（需券商連線，約數秒）">更新 CODES</button>
+    <!-- 離線 CODES 按券商各存一檔：「讀取」只讀該檔（不打券商，實測 0.03s），「更新」才向該家重拉並覆蓋。 -->
+    <button data-list="codes" title="離線讀回所選券商存放的 CODES，不向券商取數">讀取離線 CODES</button>
+    <button id="c-refresh" title="向所選券商重拉全量 CODES 並覆蓋其離線快照（需券商連線，約數秒）">更新離線 CODES</button>
+    <div><label>券商</label><select id="c-broker"></select></div>
     <div><label>市場</label><input id="c-markets" value="HK,US" size="10"></div>
     <div><label>篩選</label><input id="c-filter" size="16" placeholder="代碼或名稱"></div>
+    <!-- 同戶口頁：0 即不自動更新（預設）。未選「自動向券商重拉」時定時器只重讀離線快照，不打券商。 -->
+    <label>自動更新（秒）<input id="c-interval" type="number" min="0" step="5" value="0" style="width:64px"></label>
+    <label><input id="c-live" type="checkbox"> 自動向券商重拉</label>
     <span id="c-count" class="msg"></span>
     <span id="c-snapshot" class="msg"></span>
   </div>
@@ -147,16 +153,21 @@ function setStatus(ok, text) {
   $('status').className = 'msg' + (ok === false ? ' err' : '');
 }
 
+let inFlight = 0;   // 進行中的請求數：定時更新只在沒有在途請求時觸發，否則慢請求會逐秒疊加
+
 async function api(path, params = {}) {
   const url = new URL(path, location.origin);
   for (const [k, v] of Object.entries(params)) if (v !== '' && v !== null && v !== undefined) url.searchParams.set(k, v);
   let res, body;
+  inFlight++;
   try {
     res = await fetch(url, { headers: { 'X-API-Key': state.key } });
     body = await res.json();
   } catch (e) {
     setStatus(false, '請求失敗：' + e);
     return { status: false, message: String(e), data: { columns: [], rows: [] } };
+  } finally {
+    inFlight--;
   }
   if (res.status === 401 || res.status === 403) { setStatus(false, body.detail || '鑑權失敗'); return body; }
   return body;
@@ -361,8 +372,11 @@ function buildPanels() {
 }
 
 // 離線快照的年齡：由 /codes/meta 離線讀回，不需要任何券商連線。快照往往是唯一的離線副本，過舊時
-// 搜尋會查唔到新上市的代碼，所以零結果要一併提示可以撳「更新 CODES」。
+// 搜尋會查唔到新上市的代碼，所以零結果要一併提示可以撳「更新離線 CODES」。各券商各存一檔，故只講所選那家。
 let snapshot = null;
+
+// 本頁所有離線 CODES 操作都以所選券商為準（讀取、更新、快照狀態）；未填時跟閘道的預設券商。
+const codesBroker = () => $('c-broker').value || 'futu';
 
 function ageText(seconds) {
   if (!Number.isFinite(seconds)) return '無存放時間';
@@ -373,21 +387,23 @@ function ageText(seconds) {
 }
 
 async function loadSnapshotMeta() {
-  const body = await api('/codes/meta');
+  const broker = codesBroker();
+  const body = await api('/codes/meta', { broker });
   const el = $('c-snapshot');
-  if (!body.status) { snapshot = null; el.textContent = ''; el.className = 'msg'; return; }
+  if (!body.status) { snapshot = null; el.textContent = `${broker}：${body.message}`; el.className = 'msg err'; return; }
   const cols = body.data.columns || [], row = (body.data.rows || [])[0] || [];
   snapshot = Object.fromEntries(cols.map((c, i) => [c, row[i]]));
-  el.textContent = `快照 ${snapshot.rows} 條 · ${ageText(snapshot.age_seconds)}`
+  el.textContent = `${broker} 的快照 ${snapshot.rows} 條 · ${ageText(snapshot.age_seconds)}`
     + (snapshot.last_refresh_error ? ' · 上次更新失敗' : '');
   el.className = 'msg' + (snapshot.stale || snapshot.last_refresh_error ? ' warn' : '');
 }
 
-// 重拉全量並覆蓋快照（需券商連線，實測約數秒）。不帶 markets：快照就係全量，跟著篩選框的市场只會
-// 令一次更新只拉到部分市場，反而被後端的縮細防護拒絕。
+// 向所選券商重拉全量並覆蓋該家的快照（需券商連線，實測約數秒）。不帶 markets：快照就係全量，跟著
+// 篩選框的市场只會令一次更新只拉到部分市場，反而被後端的縮細防護拒絕。
 async function refreshCodes() {
-  loading('c-msg', '更新 CODES 中…（需券商連線，約數秒）');
-  const body = await withBusy($('c-refresh'), () => api('/codes/refresh'));
+  const broker = codesBroker();
+  loading('c-msg', `向 ${broker} 重拉 CODES 並更新其快照中…（需券商連線，約數秒）`);
+  const body = await withBusy($('c-refresh'), () => api('/codes/refresh', { broker }));
   note('c-msg', body);
   // 失敗時也要重讀元資料，先至見到記低咗嘅失敗原因。
   if (!body.status) { await loadSnapshotMeta(); return; }
@@ -405,7 +421,7 @@ async function loadCodes(path) {
   loading('c-msg', `讀取${path === 'codes' ? '離線 CODES' : '四家清單'}中…`);
   const buttons = [...document.querySelectorAll('[data-list]')];
   buttons.forEach((b) => b.disabled = true);
-  const params = path === 'codes' ? {} : { markets: $('c-markets').value.trim() };
+  const params = path === 'codes' ? { broker: codesBroker() } : { markets: $('c-markets').value.trim() };
   state.listUrl = '/' + path + (Object.keys(params).length ? '?' + new URLSearchParams(params) : '');
   const body = await api('/' + path, params);
   buttons.forEach((b) => b.disabled = false);
@@ -422,7 +438,7 @@ function filterCodes() {
   let count = `${shown.length} / ${state.rows.length} 條`;
   // 查唔到往往只係快照冇咗新上市的代碼，而唔係真係冇呢隻：過舊時直接講下一步做乜。
   if (text && !shown.length && state.list === 'codes' && snapshot && snapshot.stale) {
-    count += '：無匹配；快照已過舊，可按「更新 CODES」重拉';
+    count += '：無匹配；快照已過舊，可按「更新離線 CODES」重拉';
   }
   $('c-count').textContent = count;
   const partitioned = !!state.list && state.list !== 'codes' && !!state.caps;
@@ -498,6 +514,9 @@ async function connect() {
   const sources = caps.data.sources;
   $('sources').textContent = '來源：' + (sources.join(' ') || '無');
   $('k-broker').innerHTML = sources.map((s) => `<option value="${s}">${s}</option>`).join('');
+  // 離線 CODES 按券商各存一檔，故本頁的讀取／更新都以所選券商為準；預設選閘道的預設券商，
+  // 與接口省略 broker 時的行為一致（能力聲明不含它時自然不會被選中）。
+  $('c-broker').innerHTML = sources.map((s) => `<option value="${s}"${s === 'futu' ? ' selected' : ''}>${s}</option>`).join('');
   $('k-ktype').innerHTML = caps.data.ktypes.map((k) => `<option value="${k}"${k === 'day' ? ' selected' : ''}>${k}</option>`).join('');
   $('a-type').innerHTML = caps.data.acc_filters.map((t) => `<option value="${t}">${t}</option>`).join('');
   const autypes = [...new Set(Object.values(caps.data.adapters).flatMap((a) => a.autypes))];
@@ -511,6 +530,7 @@ async function connect() {
 document.querySelectorAll('nav button').forEach((btn) => btn.addEventListener('click', () => {
   document.querySelectorAll('nav button').forEach((b) => b.classList.toggle('active', b === btn));
   document.querySelectorAll('main section').forEach((s) => s.classList.toggle('active', s.id === 'tab-' + btn.dataset.tab));
+  if (btn.dataset.tab in lastAuto) lastAuto[btn.dataset.tab] = Date.now() / 1000;  // 切換分頁即重新計時
   // 首次進入戶口頁即取一次，否則要等到下一個刷新週期先見到資料。
   if (btn.dataset.tab === 'accounts' && !$('a-table').innerHTML) loadAccounts();
 }));
@@ -523,10 +543,35 @@ $('l-load').addEventListener('click', loadLogs);
 $('c-filter').addEventListener('input', filterCodes);
 $('c-refresh').addEventListener('click', refreshCodes);
 document.querySelectorAll('[data-list]').forEach((b) => b.addEventListener('click', () => loadCodes(b.dataset.list)));
+// 換券商即換了一檔快照：離線清單與快照狀態都要跟著改，否則顯示嘅係另一家嘅代碼表。
+// 離線表格嗰邊 loadCodes 完尾已重讀快照，此處再叫一次只會多重覆一次同一檔。
+$('c-broker').addEventListener('change', () => { if (state.list === 'codes') loadCodes('codes'); else loadSnapshotMeta(); });
+// 改秒數後由現在重新計時；填 0 即停止自動更新。
+$('a-interval').addEventListener('input', () => { lastAuto.accounts = Date.now() / 1000; });
+$('c-interval').addEventListener('input', () => { lastAuto.codes = Date.now() / 1000; });
 window.addEventListener('resize', () => state.chart && state.chart.resize());
 setInterval(() => { if ($('l-auto').checked && document.querySelector('#tab-logs.active')) loadLogs(); }, 3000);
-// 戶口頁 10 秒自動刷新（只喺該頁可見時進行，唔使喺其他頁打無謂查詢）；手動「取得戶口」照樣可用。
-setInterval(() => { if ($('a-auto').checked && document.querySelector('#tab-accounts.active')) loadAccounts(); }, 10000);
+
+// 自動更新以秒為單位，0 即不自動更新（預設）。只更新當前可見的分頁，且不在請求在途時觸發：
+// 跨四家嘅請求可達十幾秒，逐秒疊加會把閘道堵死。手動按鈕照樣可用。
+const lastAuto = { accounts: Date.now() / 1000, codes: Date.now() / 1000 };
+const secondsOf = (id) => Math.max(0, Number($(id).value) || 0);
+
+// 標的頁的定時更新預設只重讀離線快照（不打券商）；選上「自動向券商重拉」先至定時向券商重取清單。
+function autoCodes() {
+  if ($('c-live').checked) loadCodes(state.list && state.list !== 'codes' ? state.list : 'all');
+  else loadCodes('codes');
+}
+
+setInterval(() => {
+  const tab = document.querySelector('main section.active');
+  const key = tab ? tab.id.slice('tab-'.length) : '';
+  if (!(key in lastAuto)) return;
+  const gap = secondsOf(key === 'accounts' ? 'a-interval' : 'c-interval');
+  if (!gap || inFlight || Date.now() / 1000 - lastAuto[key] < gap) return;
+  lastAuto[key] = Date.now() / 1000;
+  (key === 'accounts' ? loadAccounts : autoCodes)();
+}, 1000);
 connect();
 </script>
 </body>

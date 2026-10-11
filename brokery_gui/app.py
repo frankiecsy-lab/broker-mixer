@@ -5,10 +5,13 @@
 取數在背景執行緒進行：IB 連線可達 40s，界面若同步等待即凍結。
 標的頁分上下兩表：上表為該券商自帶的欄位與格式（同參數再取一次 raw=1），下表為統一格式。兩次取數必須順序，
 同一券商的連線（IB 一條 socket、futu 一個 OpenD context）不接受並行請求。
+自動更新以秒為單位，0 即不更新（預設 0）：定時器只在當前分頁、且沒有任何在途請求時觸發，否則慢的券商請求會
+層層疊加，把同一條連線堵死。
 """
 from __future__ import annotations
 
 import math
+import time
 from pathlib import Path
 
 from PySide6 import QtCore, QtWidgets
@@ -107,9 +110,12 @@ class DesktopGui:
         self.window.tabs.addTab(self.symbols, "")
         self._jobs: set = set()
         self._symbols_seq = 0
+        self._inflight = 0                    # 在途請求數：自動更新只在全無在途請求時才觸發
+        self._last_auto = {0: 0.0, 1: 0.0}    # 各分頁上次自動更新的時刻（秒）
         self.broker_caps: dict[str, list[str]] = {}
         self.seen_markets: set[str] = set()
         self.codes_snapshot: dict | None = None   # 離線 CODES 快照的元資料行；未讀到即為 None
+        self.codes_snapshot_source = ""           # 該快照所屬的券商：各券商各存一檔，狀態必須點名是哪一档
         self._fill_combos()
         self._retranslate()
         self._connect()
@@ -142,12 +148,16 @@ class DesktopGui:
         self.window.tabs.setTabText(0, t("tab.accounts"))
         self.window.tabs.setTabText(1, t("tab.symbols"))
         self.accounts.refreshButton.setText(t("accounts.refresh"))
+        self.accounts.autoIntervalLabel.setText(t("accounts.auto_interval"))
         for label, key in ((self.symbols.kindLabel, "symbols.kind"), (self.symbols.marketLabel, "symbols.market"),
                            (self.symbols.brokerLabel, "symbols.broker")):
             label.setText(t(key))
         self.symbols.rawLabel.setText(t("symbols.raw_title"))
         self.symbols.unifiedLabel.setText(t("symbols.unified_title"))
         self.symbols.fetchButton.setText(t("symbols.fetch"))
+        self.symbols.autoIntervalLabel.setText(t("symbols.auto_interval"))
+        self.symbols.liveRefreshCheck.setText(t("symbols.live_refresh"))
+        self.symbols.codesLoadButton.setText(t("symbols.codes_load"))
         self.symbols.codesRefreshButton.setText(t("symbols.codes_refresh"))
         self.render_codes_state()
         combo = self.symbols.kindCombo
@@ -158,24 +168,56 @@ class DesktopGui:
     def _connect(self) -> None:
         self.window.languageCombo.currentIndexChanged.connect(self._on_language)
         self.accounts.refreshButton.clicked.connect(self.request_accounts)
+        self.accounts.autoIntervalSpin.valueChanged.connect(lambda _value: self._reset_auto(0))
         self.window.tabs.currentChanged.connect(self._on_tab)
         self.symbols.fetchButton.clicked.connect(self.request_symbols)
         self.symbols.kindCombo.currentIndexChanged.connect(self._on_kind)
         self.symbols.marketCombo.currentIndexChanged.connect(self.request_symbols)
-        self.symbols.brokerCombo.currentIndexChanged.connect(self.request_symbols)
+        self.symbols.brokerCombo.currentIndexChanged.connect(self._on_broker)
+        self.symbols.codesLoadButton.clicked.connect(self.request_codes_load)
         self.symbols.codesRefreshButton.clicked.connect(self.request_codes_refresh)
+        self.symbols.autoIntervalSpin.valueChanged.connect(lambda _value: self._reset_auto(1))
+        # 一跳一秒，由 _tick 判斷該分頁是否已到間隔：如此 0 即真的沒有定時器，各分頁亦互不影響。
+        self._ticker = QtCore.QTimer(self.window)
+        self._ticker.timeout.connect(self._tick)
+        self._ticker.start(1000)
         self._on_tab(self.window.tabs.currentIndex())
 
     def _on_language(self, index: int) -> None:
         self.set_language(self.window.languageCombo.itemData(index))
 
     def _on_tab(self, index: int) -> None:
+        self._reset_auto(index)
         if index == 0:
             self.request_accounts()
         elif index == 1:
             self.request_capabilities()
             # 快照狀態與清單無關（離線讀回，不需券商連線），故同時取，不等清單完成才顯示。
             self.request_codes_meta()
+
+    def _on_broker(self, _index: int) -> None:
+        """換券商即重取清單與該家的快照：各券商各一檔，留著上一家的快照會令人以為那是當前券商的資料。"""
+        self.request_symbols()
+        self.request_codes_meta()
+
+    def _reset_auto(self, index: int) -> None:
+        """切分頁或改間隔即重新計時：由現在起計，而不是沿用上一輪的時刻去湊新間隔。"""
+        self._last_auto[index] = time.monotonic()
+
+    def _tick(self) -> None:
+        """自動更新：只針對當前分頁。標的頁預設重讀離線快照（不打券商），勾上「自動向券商重拉」才即時取清單。"""
+        index = self.window.tabs.currentIndex()
+        page = self.accounts if index == 0 else self.symbols
+        gap = page.autoIntervalSpin.value() if index in (0, 1) else 0
+        if not gap or self._inflight or time.monotonic() - self._last_auto.get(index, 0.0) < gap:
+            return
+        self._last_auto[index] = time.monotonic()
+        if index == 0:
+            self.request_accounts()
+        elif self.symbols.liveRefreshCheck.isChecked():
+            self.request_symbols()
+        else:
+            self.request_codes_load()
 
     def _on_kind(self, _index: int) -> None:
         """轉類型時清空市場選項：各品種返回的市場不同，留著上一品種的市場只會白得一個 empty_list。"""
@@ -189,12 +231,18 @@ class DesktopGui:
         worker = GatewayWorker(self.client, path, params)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.finished.connect(on_done)
+
+        def deliver(envelope: dict) -> None:
+            self._inflight -= 1
+            on_done(envelope)
+
+        worker.finished.connect(deliver)
         worker.finished.connect(thread.quit)
         thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         self._jobs.add((thread, worker))
         thread.finished.connect(lambda: self._jobs.discard((thread, worker)))
+        self._inflight += 1
         thread.start()
 
     def set_status(self, text: str, color: str) -> None:
@@ -241,6 +289,9 @@ class DesktopGui:
         adapters = (envelope.get("data") or {}).get("adapters") or {}
         self.broker_caps = {name: list(info.get("capabilities") or []) for name, info in adapters.items()}
         self.render_brokers()
+        # 選項填好後才核對快照：選中的若不是剛才讀的那一家，必須改讀這一檔，否則顯示的是別家的行數。
+        if self._codes_broker() != self.codes_snapshot_source:
+            self.request_codes_meta()
         self.request_symbols()
 
     def render_brokers(self) -> None:
@@ -318,16 +369,49 @@ class DesktopGui:
             COLOR_ERROR if not envelope.get("status") else (COLOR_WARN if message else ""))
 
     # ------------------------------------------------------------ 離線 CODES 快照
-    def request_codes_meta(self) -> None:
-        """讀回離線 CODES 快照的元資料（行數、距今時間、是否過舊、上次更新失敗的原因）。
-        閘道離線讀取，不需要任何券商連線，故與清單請求互不影響。"""
-        self._request("/codes/meta", None, self.show_codes_meta)
+    def _codes_broker(self) -> str:
+        """離線 CODES 一律按當前所選券商：各券商各存一檔，讀取與更新都只針對這一家。"""
+        return self.symbols.brokerCombo.currentData() or DEFAULT_BROKER
 
-    def show_codes_meta(self, envelope: dict) -> None:
+    def request_codes_load(self) -> None:
+        """離線讀回所選券商存放的 CODES（不打券商，實測 0.03s），填下表。同時作進行中的清單請求：
+        晚到的券商回應不得蓋掉用戶剛按的離線讀取。"""
+        self._symbols_seq += 1
+        seq = self._symbols_seq
+        self.set_status(self.tr.t("status.loading"), "")
+        self._request("/codes", {"broker": self._codes_broker()},
+                      lambda envelope: self.show_codes_load(envelope, seq))
+
+    def show_codes_load(self, envelope: dict, seq: int) -> None:
+        if seq != self._symbols_seq:
+            return
+        data = envelope.get("data") or {"columns": [], "rows": []}
+        fill_table(self.symbols.symbolsTable, data)
+        # 快照只存放統一格式，沒有券商自帶的欄位：上表清空並說明原因，不留上一家的欄位在這裡。
+        fill_table(self.symbols.rawTable, {"columns": [], "rows": []})
+        self.symbols.rawMessageLabel.setText(self.tr.t("symbols.codes_raw_note"))
+        self.symbols.rawMessageLabel.setStyleSheet(COLOR_WARN)
+        self.symbols.summaryLabel.setText(self._summary(data, "symbols.summary", "accounts.by_source"))
+        self._report({**envelope, "message": f"{envelope.get('message') or ''}{self.tr.t('symbols.codes_loaded')}"},
+                     self.symbols.messageLabel)
+
+    def request_codes_meta(self) -> None:
+        """讀回所選券商離線 CODES 快照的元資料（行數、距今時間、是否過舊、上次更新失敗的原因）。
+        閘道離線讀取，不需要任何券商連線，故與清單請求互不影響。"""
+        broker = self._codes_broker()
+        # 先記下問的是哪一档：標籤在回應送達前也要點名券商，且能力聲明完成時不會再誤判為「未讀過」。
+        self.codes_snapshot_source = broker
+        self._request("/codes/meta", {"broker": broker},
+                      lambda envelope: self.show_codes_meta(envelope, broker))
+
+    def show_codes_meta(self, envelope: dict, broker: str) -> None:
+        if broker != self._codes_broker():
+            return   # 期間已轉券商：上一檔的回應不得蓋上新一檔的狀態
         if not envelope.get("status"):
+            # 該家尚未存放（各券商各一檔，新券商本就沒有檔）：明確點名是哪一家，不顯示上一家的數字。
             self.codes_snapshot = None
             self.symbols.codesLabel.setText(
-                self.tr.t("symbols.codes_error", detail=str(envelope.get("message") or "")))
+                self.tr.t("symbols.codes_error", source=broker, detail=str(envelope.get("message") or "")))
             self.symbols.codesLabel.setStyleSheet(COLOR_ERROR)
             return
         data = envelope.get("data") or {}
@@ -339,7 +423,8 @@ class DesktopGui:
         過舊時會查唔到新上市的代碼，但已存放的資料仍然可用，故不是失敗。"""
         if not self.codes_snapshot:
             return
-        text = self.tr.t("symbols.codes_state", count=self.codes_snapshot.get("rows", 0),
+        text = self.tr.t("symbols.codes_state", source=self.codes_snapshot_source,
+                         count=self.codes_snapshot.get("rows", 0),
                          age=self._age_text(self.codes_snapshot.get("age_seconds")))
         if self.codes_snapshot.get("last_refresh_error"):
             text += self.tr.t("symbols.codes_last_error")
@@ -362,12 +447,13 @@ class DesktopGui:
         return self.tr.t("age.just_now")
 
     def request_codes_refresh(self) -> None:
-        """重拉全量 CODES 並覆蓋離線快照（需券商連線，實測約數秒）。不帶市場參數：快照就是全量，
-        只拉部分市場會被閘道的縮細防護拒絕。"""
+        """向所選券商重拉全量 CODES 並覆蓋該家的離線快照（需券商連線，實測約數秒）。不帶市場參數：
+        快照就是全量，只拉部分市場會被閘道的縮細防護拒絕。"""
+        broker = self._codes_broker()
         self.set_status(self.tr.t("status.loading"), "")
         self.symbols.codesRefreshButton.setEnabled(False)   # 重拉需數秒，期間不可重覆送出
-        self.symbols.codesLabel.setText(self.tr.t("symbols.codes_refreshing"))
-        self._request("/codes/refresh", None, self.show_codes_refresh)
+        self.symbols.codesLabel.setText(self.tr.t("symbols.codes_refreshing", source=broker))
+        self._request("/codes/refresh", {"broker": broker}, self.show_codes_refresh)
 
     def show_codes_refresh(self, envelope: dict) -> None:
         self.symbols.codesRefreshButton.setEnabled(True)

@@ -189,22 +189,24 @@ class StreamWorker:
 
 
 def auto_refresh_codes(brokery: Brokery, logger) -> None:
-    """快照過舊時在背景重拉全量 CODES；未過舊或已關閉自動更新時直接返回。
+    """預設券商的快照過舊時在背景重拉全量 CODES；未過舊或已關閉自動更新時直接返回。
 
     只在啟動時做一次，絕不在請求內同步重拉：全量重拉實測約 6 秒，而離線讀回同一份快照只需
-    0.03 秒，把更新放進請求路徑會令第一次搜尋慢兩百倍。閘道可能在重拉完成前已關閉，屆時本次
-    更新只是失敗並記進快照的 last_refresh_error，不影響已存放的舊快照。
+    0.03 秒，把更新放進請求路徑會令第一次搜尋慢兩百倍。只更新 CODES_SOURCE 一檔：各家重拉都要
+    數秒，啟動時逐家拉會把啟動拖成十幾秒，其他券商的快照由界面上的「更新離線 CODES」按需拉。
+    閘道可能在重拉完成前已關閉，屆時本次更新只是失敗並記進快照的 last_refresh_error，
+    不影響已存放的舊快照。
     """
     limit = codes_max_age_seconds()
     if limit <= 0:
         return
     try:
-        meta = store.load_meta(store.CODES_DATASET)
+        meta = store.load_meta(store.codes_dataset(CODES_SOURCE))
     except store.StoreError:
         meta = {}  # 尚未有快照：視為最舊，沒有離線資料可用，必須拉一次
     if not store.meta_stale(meta, limit):
         return
-    result = brokery.refresh_codes()
+    result = brokery.refresh_codes(broker=CODES_SOURCE)
     line = f"CODES 自動更新 → status={bool(result['status'])} {result['message']}"
     if result["status"]:
         logger.info(line)
@@ -383,24 +385,24 @@ def create_app(sources: tuple[str, ...] | None = None, autype: str | None = None
     # ---------- 清單與代碼 ----------
 
     @app.get("/codes", dependencies=[auth])
-    def codes(name: str | None = None) -> dict:
-        """離線讀回已存放的 CODES（parquet），不需要任何券商連線。"""
-        return guarded("/codes", lambda: app.state.brokery.get_code(name) if name else app.state.brokery.get_code())
+    def codes(broker: str = CODES_SOURCE) -> dict:
+        """離線讀回某券商存放的 CODES（parquet），不需要任何券商連線。各券商各一檔，互不混雜。"""
+        return guarded("/codes", lambda: app.state.brokery.get_code(broker))
 
     @app.get("/codes/meta", dependencies=[auth])
-    def codes_meta(name: str | None = None) -> dict:
-        """CODES 快照的元資料（行數、存放時間、距今秒數、是否過舊、上次更新失敗的原因）。
+    def codes_meta(broker: str = CODES_SOURCE) -> dict:
+        """某券商 CODES 快照的元資料（行數、存放時間、距今秒數、是否過舊、上次更新失敗的原因）。
         單行 DataFrame，欄位為 core.CODES_META_COLUMNS；離線執行，不需要任何券商連線。"""
-        return guarded("/codes/meta",
-                       lambda: app.state.brokery.get_code_meta(name) if name
-                       else app.state.brokery.get_code_meta())
+        return guarded("/codes/meta", lambda: app.state.brokery.get_code_meta(broker))
 
     @app.get("/codes/refresh", dependencies=[auth])
-    def codes_refresh(markets: str | None = None, force: bool = False) -> dict:
-        """重拉全量 CODES 並更新離線快照（需券商連線，實測約 6 秒）。某品種明顯縮細時拒絕覆蓋，
-        只向快照的來源券商取（core.CODES_SOURCE），不混入其他券商的標識体系。"""
+    def codes_refresh(broker: str = CODES_SOURCE, markets: str | None = None,
+                      force: bool = False) -> dict:
+        """向某券商重拉全量 CODES 並更新該券商的離線快照（需券商連線，實測約 6 秒）。
+        某品種明顯縮細時拒絕覆蓋；快照內容由該券商聲明的能力決定（不提供股票者只含期貨與指數）。"""
         return guarded("/codes/refresh",
-                       lambda: app.state.brokery.refresh_codes(_split(markets) or None, force=force))
+                       lambda: app.state.brokery.refresh_codes(_split(markets) or None,
+                                                               broker=broker, force=force))
 
     @app.get("/stocks", dependencies=[auth])
     def stocks(markets: str | None = None, broker: str | None = None,

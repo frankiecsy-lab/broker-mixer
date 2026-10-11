@@ -1,9 +1,10 @@
-"""離線顯示已存放的 CODES：經 Brokery.get_code 讀回，不連 OpenD 亦不連 IB。
+"""離線顯示某券商已存放的 CODES：經 Brokery.get_code 讀回，不連 OpenD 亦不連 IB。
 另核對 get_code_meta 所報的行數與距今時間與實際存放的一致——三個介面顯示的「快照幾舊」即由此而來。
 
 以腳本方式直接執行：
-    python brokery/acceptance/run_get_codes.py            # 全部
-    python brokery/acceptance/run_get_codes.py FUTURE     # 只顯示某類型（STOCK/FUTURE/INDEX）
+    python brokery/acceptance/run_get_codes.py                # 全部（預設券商 futu）
+    python brokery/acceptance/run_get_codes.py FUTURE         # 只顯示某類型（STOCK/FUTURE/INDEX）
+    python brokery/acceptance/run_get_codes.py "" ib          # 讀 ib 那一檔（各券商各一檔）
 """
 import sys
 from pathlib import Path
@@ -19,12 +20,10 @@ from brokery.core import CODES_META_COLUMNS
 pd.set_option("display.max_columns", None)
 pd.set_option("display.width", 220)
 
-DATASET = store.CODES_DATASET
-
-
-def main(symbol_type: str = "") -> dict:
+def main(symbol_type: str = "", broker: str = "futu") -> dict:
+    dataset = store.codes_dataset(broker)
     with Brokery() as b:
-        result = b.get_code(DATASET)
+        result = b.get_code(broker)
     if not result["status"]:
         print(f"status=False message={result['message']}")
         return result
@@ -38,9 +37,9 @@ def main(symbol_type: str = "") -> dict:
             print(f"status=False message={result['message']}")
             return result
 
-    meta = store.load_meta(DATASET)
+    meta = store.load_meta(dataset)
     with Brokery() as b:
-        got = b.get_code_meta(DATASET)
+        got = b.get_code_meta(broker)
     row = dict(zip(got["data"].columns, got["data"].iloc[0])) if got["status"] else {}
     if row.get("rows") != meta["rows"] or list(got["data"].columns) != list(CODES_META_COLUMNS):
         result["status"] = False
@@ -59,4 +58,7 @@ def main(symbol_type: str = "") -> dict:
 
 
 if __name__ == "__main__":
-    raise SystemExit(0 if main((sys.argv[1] if len(sys.argv) > 1 else "").upper())["status"] else 1)
+    raise SystemExit(0 if main(
+        (sys.argv[1] if len(sys.argv) > 1 else "").upper(),
+        (sys.argv[2] if len(sys.argv) > 2 else "futu").lower(),
+    )["status"] else 1)

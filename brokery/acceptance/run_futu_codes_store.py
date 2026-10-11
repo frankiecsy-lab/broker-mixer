@@ -14,7 +14,7 @@ from brokery import Brokery, store
 pd.set_option("display.max_columns", None)
 pd.set_option("display.width", 220)
 
-DATASET = store.CODES_DATASET
+DATASET = store.codes_dataset("futu")
 MARKETS = ("HK", "US")
 
 
