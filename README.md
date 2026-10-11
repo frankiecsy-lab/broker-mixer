@@ -18,6 +18,7 @@ Brokers）**；K 線與 K 線串流另支援 **Tiger（老虎）** 與 **Webull*
 | K 線 `get_kline`（統一格式、以 bar 數取數） | ✅ 可用 | FUTU + IB（日/週/月線實測逐根按 `ts` 對齊，價格一致）+ Webull（日線/分鐘線實測，日線確實做了前復權，調整因子與 IB 一致：與原始成交價最大相差 0.062%）+ Tiger（日線/1 分鐘線實測，`autype="none"` 時 close 與 FUTU 逐根完全一致） |
 | 前復權跨券商對照（日內與日線） | ✅ 可用 | FUTU `qfq` + IB `ADJUSTED_LAST` + Tiger `right=BR` + Webull（日線固定前復權）：`HK.00005` 日線 60 根四家共同 60 根逐根對齊，以富途為準 Tiger 最大相差 0.02%、IB/Webull 0.44% |
 | 品種支持矩陣（股票／期貨／指數／期權）與復權適用範圍 | ✅ 已核實 | 四家實測（`run_kline_matrix.py`，31 項檢查）：不支持的品種由適配器聲明、`core` 統一返回 `type_unsupported`；復權只對股票有效（期貨／指數／期權的 `qfq` 與 `none` 逐根完全相同）；指數代碼可跨券商（`HK.800000` 富途與 IB 的 close 完全相同、`US..SPX` Tiger 與 IB 完全相同） |
+| 戶口與資金 `get_accounts`（四家統一 15 欄） | ✅ 可用 | FUTU + IB + Tiger + Webull（實測 futu 2 個（cash/margin，模擬與已停用的不列）、IB 1 個、Tiger 1 個、Webull 2 個；`currency` 全部填到：futu/IB/Webull 為 HKD、Tiger 為 USD；38 項檢查全過） |
 | K 線串流 `stream_kline`（一條連線同時串流多個代碼） | ✅ 可用 | FUTU 實時推送 + IB `keepUpToDate` + Tiger `subscribe_kline` 原生推送 + Webull 輪詢批量 bar（憑證只開通 HK 行情，美股明確報錯 `market_data_not_subscribed`）；實測 futu/ib/tiger/webull 全部合規格（Tiger 一條連線同時串流港美 3 個代碼；Webull 以 2 個 HK 代碼共用一次輪詢）；推送本身要開市才收得到 |
 
 ## 快速開始
@@ -36,6 +37,9 @@ with Brokery() as bk:                      # 預設同時啟用 futu / ib / tige
     kline = bk.get_kline("HK.00001")                                 # 富途日線最近 60 根（預設前復權）
     kline_ib = bk.get_kline("HK.00001", broker="ib", autype="none")  # 同一組 bar，改由 IB 取（比價一律取原始價）
     kline_wb = bk.get_kline("HK.00001", broker="webull")             # 改由 Webull 取（日線只能前復權，無復權參數）
+
+    accounts = bk.get_accounts()                   # 四家的戶口與資金，欄位完全相同
+    accounts = bk.get_accounts(broker="futu", acc_type="margin", currency="HKD")
 
     # 串流：四個代碼共用一條連線（對應同時顯示四張 K 線圖），最新一根每次變化即回呼
     live = bk.stream_kline(["HK.00005", "US.NVDA"], ktype="1m", count=30, broker="futu",
@@ -260,6 +264,38 @@ autype_unsupported: webull 的 K 線串流只支持 autype="none"（分鐘線只
 Webull 的輪詢按 `category` 分組，每個市場一次請求覆蓋該市場全部代碼（不是每圖一次）；間隔 2 秒
 即每市場 30 次/分鐘，在其实測的港股 60 次/60 秒限額之內。
 
+### 10. 戶口與資金
+```python
+bk.get_accounts()                                  # 四家全部戶口，欄位完全相同
+bk.get_accounts(broker="futu", acc_type="margin")  # 只取富途的保證金戶口
+bk.get_accounts(broker="ib", currency="USD")       # 只取以美元結算的金額
+```
+一律只返回**真實且已啟用**的戶口，不區分 real/simulate：IB 的真實與模擬由所連 Gateway/TWS 決定，
+接口本身沒有這個維度；富途與 Tiger 的模擬戶口、富途的已停用（`INACTIVE`/`DISABLED`）戶口因此不列入。
+`data` 的欄位固定為 `brokers.base.ACCOUNT_COLUMNS`：
+
+| 欄位 | 說明 |
+| --- | --- |
+| `source` / `account_id` | 來源券商與券商的戶口標識 |
+| `acc_type` | 戶口性質 `cash` / `margin`；券商表明瞭才歸類，無法判定的原樣返回（如 IB 個人戶口的 `individual`） |
+| `status` | 券商回報的戶口狀態；Webull 與 IB 無此欄位，為空字串 |
+| `currency` | 該行金額的計價幣種（一律不換算） |
+| `net_liquidation` … `realized_pnl` | 資金與保證金各欄；該券商沒有者為 `NaN`，不以任何數字湊出 |
+
+`acc_type` 只可傳 `all`/`cash`/`margin`，各券商能表明哪一種由適配器以 `SymbolBroker.acc_types` 聲明，
+要求了不支持的值即 `status=False`（`acc_type_unsupported:`），不會憑空造出戶口。`currency` 只作篩選：
+與該戶口的計價幣種不符即不返回該戶口。`broker` 省略時查全部已啟用的券商，個別券商失敗仍返回已取得的
+戶口並在 `message` 逐項說明（`ok（…，部分券商未完成）`）；全部失敗才是 `no_account:`。
+
+四家的取數方式不同，但輸出可完全相同（實測 futu 2 個、IB 1 個、Tiger 1 個、Webull 2 個）：
+
+| 來源 | 戶口與性質 | 資金 | 幣種 |
+| --- | --- | --- | --- |
+| FUTU | `get_acc_list`（只 `trd_env=REAL` 且 `acc_status=ACTIVE`）；性質為 `acc_type`（CASH/MARGIN） | `accinfo_query`（必須傳幣種） | 未指定時取該戶口首個可映射結算幣的授權市場 |
+| IB | `accountSummary`（group `All`）；性質由 `AccountType` tag 映射（`C`→cash、`M`/`LIMITED_MARGIN`→margin） | 同一請求的 `NetLiquidation`/`TotalCashValue` 等 tag | 每個金額自帶結算幣，多幣種按幣種各列一欄 |
+| Tiger | `get_managed_accounts`（只 `account_type=STANDARD`，即非 PAPER）；性質由 `capability`（RegTMargin/BasicCash）表明 | `get_assets`（無幣種參數） | 帳戶結算幣；不符即不返回該戶口 |
+| Webull | `get_account_list`（只有真實戶口，無需過濾）；性質為 `account_type`（實測 `MRGN`） | `get_account_balance` | 匯總幣種；指定時改讀 `account_currency_assets` 中該幣種的明細 |
+
 ## 設計前提（實測結論，改動前請先讀）
 - 股票清單只出自富途：`get_stock_basicinfo` 一次取全；IB 無「一次過列出全市場股票」的接口。
 - 富途的期貨/指數批量清單（`FUTURE`/`IDX` 類型）同樣一次取全，且主連就用 `main` 後綴，與本專案
@@ -313,6 +349,19 @@ Webull 的輪詢按 `category` 分組，每個市場一次請求覆蓋該市場�
   403 `MARKET_DATA_NOT_SUBSCRIBED`（該市場未開通行情），故只以 HK 代碼驗收其串流，未驗收者打印 WARN 而
   不計失敗，免得把賬戶的行情權限問題誤當為代碼錯誤。
 
+- IB 的 `accountSummary` 只能用 group `"All"`：實測 `"Individual"` 完全不返回資料，亦不會送
+  `accountSummaryEnd`，即會一直等到超時。ib_async 內建的 tag 清單不含 `Currency`/`UnrealizedPnL`/
+  `RealizedPnL`，故自組清單（`IB_ACCOUNT_TAGS`）；本帳戶的 `Currency` tag 仍被後端略過（不報錯），
+  幣種附在每個金額的 `currency` 欄上，故按（戶口, 幣種）分組取幣種。`AccountType` 對個人戶口返回
+  `INDIVIDUAL`，未表明現金或保證金，故原樣返回 `individual`，不憑空歸類。
+- 富途 `get_acc_list` 的 `trdmarket_auth` 是 **list**（不是字符串），按字符串拆分會連引號一起拆出來而
+  全部映射失敗；`accinfo_query` 必須傳幣種，且返回的數字只屬該幣種（另有各幣種明細欄），故未指定幣種時
+  取首個可映射結算幣的授權市場，同一戶口只列一欄。已停用的戶口（實測值為 `DISABLED`）取不到資金。
+- Tiger 的 `get_assets` 沒有幣種參數（實測傳 `base_currency` 被拒），只按帳戶結算幣返回；`inf` 表示該
+  幣種無此項（實測空戶口的保證金要求為 `inf`），一律還原為 `NaN`。
+- Webull 的 `get_account_balance` 同時返回各幣種明細（`account_currency_assets`），故指定幣種時改讀該
+  明細；它沒有淨資產與可用資金欄位（只有可提現金額，語義不同），該兩欄為 `NaN`。
+
 ## 測試
 ```bash
 python brokery/acceptance/run_futu_codes.py         # 全量 CODES：股票 + 期貨 + 指數（需 OpenD）
@@ -326,6 +375,7 @@ python brokery/acceptance/run_align_kline.py US.NVDA day 120   # 指定代碼 / 
 python brokery/acceptance/run_stream_kline.py          # 一條連線同時串流多個代碼（futu/ib/tiger/webull），核對回呼規格與 seconds 約束（需 OpenD + IB；Tiger 需私鑰）
 python brokery/acceptance/run_stream_kline.py US.NVDA 5m 50 120   # 指定代碼（逗號分隔可多個）/ ktype / bar 數 / 秒數
 python brokery/acceptance/run_kline_matrix.py      # 品種 × 券商矩陣：品種推斷、能力閘（type_unsupported）、復權只對股票有效、指數跨券商對齊（需 OpenD + IB + Tiger）
+python brokery/acceptance/run_get_accounts.py      # 四家戶口與資金：統一欄位、只列真實且已啟用的戶口、幣種有無填到、acc_type/currency/broker 三個參數的邊界（需 OpenD + IB + Tiger + Webull）
 ```
 測試以腳本方式直接執行（不使用 pytest）：執行後即輸出 `status`、`message` 與完整代碼表，
 並以退出碼 `0`/`1` 表示成敗。

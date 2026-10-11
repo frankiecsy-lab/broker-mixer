@@ -16,13 +16,17 @@ from tigeropen.common.consts import BarPeriod, QuoteRight
 from tigeropen.push.push_client import PushClient
 from tigeropen.quote.quote_client import QuoteClient
 from tigeropen.tiger_open_config import TigerOpenClientConfig
+from tigeropen.trade.trade_client import TradeClient
 
 from ..codes import INDEX, STOCK, CodeError, parse_code, to_display_symbol
 from ..config import get_settings
 from .base import (
+    ACC_CASH,
+    ACC_MARGIN,
     ANCHOR_START,
     BarMerger,
     SymbolBroker,
+    account_row,
     align_ts,
     kline_row,
     stream_wait,
@@ -47,6 +51,27 @@ TIGER_RIGHT = {"qfq": QuoteRight.BR, "none": QuoteRight.NR}
 
 PAGE_MAX = 1000  # 單次請求的保守 bar 數，超過即改用 SDK 的分頁接口
 
+# get_managed_accounts 的 account_type：STANDARD 為真實戶口、PAPER 為模擬戶口。統一格式不再區分環
+# 境，故只取 STANDARD。capability 另為獨立欄位，含 margin 者（RegTMargin/PortfolioMargin 等）為保
+# 證金戶口，其餘（BasicCash/InstCash）為現金戶口。
+REAL_ACCOUNT_TYPE = "STANDARD"
+
+
+def _summary_funds(summary) -> dict:
+    """Tiger 的 Account 摘要 → 統一金額欄位（無值由 account_row 把 inf 還原為 NaN）。"""
+    return {
+        "net_liquidation": getattr(summary, "net_liquidation", None),
+        "cash": getattr(summary, "cash", None),
+        "market_value": getattr(summary, "gross_position_value", None),
+        "available_funds": getattr(summary, "available_funds", None),
+        "buying_power": getattr(summary, "buying_power", None),
+        "init_margin": getattr(summary, "initial_margin_requirement", None),
+        "maint_margin": getattr(summary, "maintenance_margin_requirement", None),
+        "equity_with_loan": getattr(summary, "equity_with_loan", None),
+        "unrealized_pnl": getattr(summary, "unrealized_pnl", None),
+        "realized_pnl": getattr(summary, "realized_pnl", None),
+    }
+
 
 class TigerBroker(SymbolBroker):
     """Tiger OpenAPI 的 K 線來源（股票）。"""
@@ -63,11 +88,14 @@ class TigerBroker(SymbolBroker):
     # 實測美股指數（US..SPX）可用，故聲明 INDEX；港股指數與期貨（含主連）一律返回空 bar，
     # 即未接入對應接口。
     kline_symbol_types = (STOCK, INDEX)
+    # 實測 get_managed_accounts 的 capability 表明現金或保證金（BasicCash/RegTMargin），兩種皆聲明。
+    acc_types = (ACC_CASH, ACC_MARGIN)
 
     def __init__(self):
         self._config: TigerOpenClientConfig | None = None
         self._quote: QuoteClient | None = None
         self._push: PushClient | None = None
+        self._trade: TradeClient | None = None
 
     # ---------- 鑑權 ----------
 
@@ -102,6 +130,11 @@ class TigerBroker(SymbolBroker):
         if self._quote is None:
             self._quote = QuoteClient(self._client_config())
         return self._quote
+
+    def _trade_client(self) -> TradeClient:
+        if self._trade is None:
+            self._trade = TradeClient(self._client_config())
+        return self._trade
 
     # ---------- K 線 ----------
 
@@ -187,6 +220,41 @@ class TigerBroker(SymbolBroker):
         finally:
             self.close()
         return {code: mergers[code].frame() for code in codes}
+
+    # ---------- 戶口 ----------
+
+    def get_accounts(self, currency: str | None = None) -> list[dict]:
+        """戶口清單與資金：get_managed_accounts 定戶口性質，get_assets 取資金。
+
+        只取 account_type=STANDARD 的真實戶口（PAPER 為模擬戶口，統一格式不再區分環境，紙面資金
+        不應混入）。capability（RegTMargin、BasicCash 等）獨立表明現金或保證金，映射為 acc_type。
+        get_assets 只按帳戶返回其結算幣的數字，沒有按幣種的參數（實測傳 base_currency 被拒），故
+        currency 只作篩選：與該戶口結算幣不符即不返回該戶口，一律不做匯率換算。Tiger 以 inf 表示
+        該幣種無此項（實測空戶口的保證金要求為 inf），一律還原為 NaN。
+        """
+        trade = self._trade_client()
+        rows: list[dict] = []
+        for profile in trade.get_managed_accounts():
+            if str(profile.account_type) != REAL_ACCOUNT_TYPE:
+                continue
+            account = str(profile.account)
+            assets = trade.get_assets(account=account, market_value=True)
+            if not assets:
+                continue
+            summary = assets[0].summary
+            currency_of_account = str(getattr(summary, "currency", "") or "")
+            if currency and currency_of_account and currency.upper() != currency_of_account.upper():
+                continue
+            capability = str(profile.capability)
+            rows.append(account_row(
+                source=self.source,
+                account_id=account,
+                acc_type=ACC_MARGIN if "margin" in capability.lower() else ACC_CASH,
+                status=str(profile.status),
+                currency=currency_of_account,
+                funds=_summary_funds(summary),
+            ))
+        return rows
 
     # ---------- 內部 ----------
 

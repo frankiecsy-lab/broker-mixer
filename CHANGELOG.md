@@ -77,8 +77,8 @@
 
 ### 技術決策與實測限制
 - 股票清單只取自富途；IB 無批量列出全市場股票的接口，只作代碼轉換與逐個解析。
-- 向 IB 查詢不得指定 `exchange`（指定後常回報 `No security definition found`）；港股符號須去
-  前導零。
+- 向 IB 查詢股票／個月份不得指定 `exchange`（指定後常回報 `No security definition found`）；主連
+  （`CONTFUT`）則相反，必須帶 exchange，詳見下文「主連解析」。港股符號須去前導零。
 - 單一合約解析改用 `reqContractDetails` 而非 `qualifyContracts`：同一合約常在 CME 與 QBALGO
   等處同時掛牌，`qualifyContracts` 會直接回報 Ambiguous。
 - 清單去重：同一合約多處掛牌時只保留主場，次要場所（QBALGO、TRULYTA、MEMX、CBOE2 等）剔除。
@@ -245,3 +245,28 @@
   合約）、tiger 未接入、webull 無。指數——futu 只港（富途不提供美股指數）、tiger 只美、ib 見上、
   webull 無。期權——只有 futu（美股為完整序列，港股期權實測只返回當日一根）；IB 未聲明，因其期權需
   完整結構（行權價、到期月、買賣方向），統一代碼無法唯一還原。
+
+### 新增（戶口與資金）
+- `Brokery.get_accounts(broker=None, acc_type="all", currency=None)`：四家一律以
+  `brokers.base.ACCOUNT_COLUMNS`（15 欄）返回戶口與資金。一律只返回真實且已啟用的戶口，不區分
+  real/simulate：IB 的真實與模擬由所連 Gateway 決定、接口本身沒有這個維度，富途與 Tiger 的模擬戶口
+  及富途已停用的戶口因此不列入。
+- 戶口性質 `acc_type`（`cash`/`margin`）為返回欄位，取值由 `SymbolBroker.acc_types` 聲明、core 統一
+  拒绝不支持者；無法判定的帳戶類別（如 IB 個人戶口的 `individual`）原樣返回，不憑空歸類。
+- 各家來源：富途 `get_acc_list` + `accinfo_query`；IB `accountSummary`（group `All`，自組 tag 清單，
+  因 ib_async 內建清單缺少 `Currency`/`UnrealizedPnL`/`RealizedPnL`）；Tiger `get_managed_accounts`
+  （只 `account_type=STANDARD`）+ `get_assets`；Webull `get_account_list` + `get_account_balance`。
+- `currency` 一律取各券商原生匯總幣種、不做匯率換算：富途的 `accinfo_query` 必須帶幣種，故取戶口首個
+  授權市場的結算幣；IB 的 `Currency` tag 不返回，改以每個金額自帶的結算幣為準，多幣種戶口按幣種各列
+  一欄，`core._dedupe_accounts` 的去重鍵因此亦含幣種。
+- `brokery/acceptance/run_get_accounts.py`：核對四家格式統一、只列真實且已啟用的戶口、`currency` 有無
+  真係填到，以及 `acc_type` / `currency` / `broker` 三個參數在非法或不支持時明確報錯（38 項）。
+
+### 技術變更（IB 主連解析）
+- `CONTFUT` 必須帶 `exchange`：本次實測不帶 exchange 的主連查詢一律返回 `No security definition found`
+  （ES/ZN/10Y/HSI 皆然），帶上同 root 的 `FUT` 結果中的 exchange 即解析到（同一 root 喺 CME 與 QBALGO
+  返回同一 conId）。故主連一律先以 `FUT` 取得掛牌交易所再查 `CONTFUT`：`_collect_futures` 按此順序展開，
+  `_best_match` 對無 exchange 的 `CONTFUT` 亦自行補上。
+- 影響：`list_futures` 恢復返回主連行（此前 IB 對所有種子 root 的主連一律 0 筆），`US.10Ymain`、
+  `US.ESmain`、`US.ZNmain` 等主連 K 線亦恢復可取；`run_kline_matrix.py` 的 `ib US.10Ymain` 一項由
+  `unresolvable` 轉為通過。

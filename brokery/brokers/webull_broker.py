@@ -17,13 +17,17 @@ from datetime import datetime, timezone
 from webull.core.client import ApiClient
 from webull.core.exception.exceptions import ClientException, ServerException
 from webull.data.data_client import DataClient
+from webull.trade.trade_client import TradeClient
 
 from ..codes import CodeError, parse_code, to_display_symbol
 from ..config import get_settings
 from .base import (
+    ACC_CASH,
+    ACC_MARGIN,
     ANCHOR_START,
     BarMerger,
     SymbolBroker,
+    account_row,
     align_ts,
     kline_row,
     to_local_text,
@@ -60,6 +64,45 @@ TOKEN_CHECK_SECONDS = 30  # token 未獲批准時的等待上限：SDK 預設 30
 TOKEN_CHECK_INTERVAL = 5
 
 
+def _payload(response, what: str):
+    """Webull 的接口返回 requests.Response：非 200 即抛出，不把錯誤內容當資料返回。"""
+    if response.status_code != 200:
+        raise RuntimeError(f"{what}: HTTP {response.status_code} {response.text[:200]}")
+    return response.json()
+
+
+def _acc_type_of(account_type: str) -> str:
+    """Webull 的 account_type → 統一戶口性質。實測返回 MRGN（account_class 亦帶 MRGN 字樣）。"""
+    text = account_type.upper()
+    if "MRGN" in text or "MARGIN" in text:
+        return ACC_MARGIN
+    if "CASH" in text:
+        return ACC_CASH
+    return account_type.lower()
+
+
+def _balance_funds(balance: dict, block: dict | None) -> dict:
+    """Webull 的資金返回 → 統一金額欄位。
+
+    匯總（total_*）只有市值、現金與未實現盈虧；按幣種明細另有購買力與期初保證金。兩處都沒有淨資產
+    與可用資金（只有可提現金額，語義不同），故該兩欄一律不填，由 account_row 轉為 NaN。
+    """
+    if block is None:
+        return {
+            "cash": balance.get("total_cash_balance"),
+            "market_value": balance.get("total_market_value"),
+            "init_margin": balance.get("init_margin"),
+            "unrealized_pnl": balance.get("total_unrealized_profit_loss"),
+        }
+    return {
+        "cash": block.get("cash_balance"),
+        "market_value": block.get("market_value"),
+        "buying_power": block.get("buying_power"),
+        "init_margin": block.get("init_margin"),
+        "unrealized_pnl": block.get("unrealized_profit_loss"),
+    }
+
+
 class WebullBroker(SymbolBroker):
     """Webull OpenAPI 的 K 線來源（股票）。"""
 
@@ -74,15 +117,19 @@ class WebullBroker(SymbolBroker):
     # 只返回不復權價，故串流只支持 none。
     stream_ktypes = ("1m",)
     stream_autypes = ("none",)
+    # Webull 的 account_type 表明戶口性質（實測為 MRGN）。其 OpenAPI 只有真實戶口（account_v2 無
+    # 模擬戶口，SDK 亦無模擬交易接口），故不需再按環境過濾。
+    acc_types = (ACC_CASH, ACC_MARGIN)
 
     def __init__(self):
+        self._api: ApiClient | None = None
         self._data: DataClient | None = None
 
     # ---------- 鑑權 ----------
 
-    def _market_data(self):
-        """構造（並複用）行情客戶端。建立時 SDK 會取用或新建 token，未獲批准即在此報錯。"""
-        if self._data is None:
+    def _api_client(self) -> ApiClient:
+        """構造（並複用）API 客戶端。行情與交易客戶端共用同一份鑑權與 token。"""
+        if self._api is None:
             settings = get_settings()
             if not settings.webull_app_key or not settings.webull_app_secret:
                 raise CodeError("not_configured: 缺少 WEBULL_APP_KEY / WEBULL_APP_SECRET")
@@ -96,14 +143,24 @@ class WebullBroker(SymbolBroker):
                 token_check_interval_seconds=TOKEN_CHECK_INTERVAL,
             )
             api.set_token_dir(str(settings.webull_token_dir))
+            self._api = api
+        return self._api
+
+    def _market_data(self):
+        """構造（並複用）行情客戶端。未獲批准即在此報錯。"""
+        if self._data is None:
             try:
-                self._data = DataClient(api)
+                self._data = DataClient(self._api_client())
             except ClientException as exc:
+                settings = get_settings()
                 raise CodeError(
                     f"token_unapproved: {exc}；請在 Webull App 中批准本次 API 授權請求後重試"
                     f"（token 已存放於 {settings.webull_token_dir}，批准後可直接沿用）"
                 ) from exc
         return self._data.market_data
+
+    def _trade_client(self) -> TradeClient:
+        return TradeClient(self._api_client())
 
     # ---------- K 線 ----------
 
@@ -180,6 +237,41 @@ class WebullBroker(SymbolBroker):
         except KeyboardInterrupt:  # 按 Ctrl-C 屬正常結束
             pass
         return {code: mergers[code].frame() for code in codes}
+
+    # ---------- 戶口 ----------
+
+    def get_accounts(self, currency: str | None = None) -> list[dict]:
+        """戶口清單與資金：account_v2.get_account_list 定戶口，get_account_balance 取資金。
+
+        Webull 只有真實戶口，不需按環境過濾；acc_type 由 account_type 映射（實測為 MRGN）。
+        get_account_balance 同時返回各幣種明細（account_currency_assets），故指定 currency 時改讀
+        該幣種的明細（沒有該幣種即不返回該戶口），未指定時以 total_asset_currency 的匯總為準，
+        一律不做匯率換算。Webull 沒有淨資產與可用資金欄位（只有可提現金額，語義不同），該兩欄為
+        NaN；get_account_list 亦不返回戶口狀態，status 為空字串，不以任何數字湊出。
+        """
+        account_api = self._trade_client().account_v2
+        rows: list[dict] = []
+        for acc in _payload(account_api.get_account_list(), "get_account_list"):
+            account_id = str(acc["account_id"])
+            balance = _payload(account_api.get_account_balance(account_id), "get_account_balance")
+            block = None
+            if currency:
+                block = next(
+                    (item for item in balance.get("account_currency_assets", [])
+                     if str(item.get("currency", "")).upper() == currency.upper()),
+                    None,
+                )
+                if block is None:
+                    continue
+            rows.append(account_row(
+                source=self.source,
+                account_id=account_id,
+                acc_type=_acc_type_of(str(acc.get("account_type", ""))),
+                status="",
+                currency=(currency or str(balance.get("total_asset_currency") or "")).upper(),
+                funds=_balance_funds(balance, block),
+            ))
+        return rows
 
     # ---------- 內部 ----------
 

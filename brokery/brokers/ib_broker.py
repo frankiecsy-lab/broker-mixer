@@ -4,8 +4,9 @@ IB 沒有「一次過列出全市場股票」的接口，故本適配器不聲�
 與逐個解析。期貨與指數以種子 root 展開所有到期月與掛牌交易所。
 
 兩處與直覺不同，均為實測結論，實作必須遵守：
-- 查詢時不可指定 exchange。指定後 IB 常回傳「No security definition found」；留空由
-  IB 自行 resolve 才取得到（港股與期貨尤其明顯）。
+- 一般查詢不可指定 exchange：指定後 IB 常回傳「No security definition found」，留空由 IB 自行
+  resolve 才取得到（港股與股票尤其明顯）。主連（CONTFUT）則相反，實測不帶 exchange 一律無結果
+  （ES/ZN/10Y/HSI 皆然），必須先以同 root 的 FUT 取得掛牌交易所再查。
 - 同一合約常在多個場所掛牌（如 CME 與 QBALGO），需去重並保留主場。
 
 ib_async 為非同步介面。此處只維持一條持續連線（由專屬 event loop 執行緒驅動），所有查詢與
@@ -38,11 +39,14 @@ from ..codes import (
 )
 from ..config import get_settings
 from .base import (
+    ACC_CASH,
+    ACC_MARGIN,
     ANCHOR_END,
     CAP_FUTURE,
     CAP_INDEX,
     BarMerger,
     SymbolBroker,
+    account_row,
     align_ts,
     dedupe_rows,
     kline_row,
@@ -88,6 +92,48 @@ IB_INDEX_ALIAS = {
 }
 
 
+# 戶口所需的 accountSummary tag。ib_async 內建的清單（見 IB.reqAccountSummaryAsync）沒有 Currency、
+# UnrealizedPnL 與 RealizedPnL，少了 Currency 就不知道金額以何種幣種計，故自組清單一次取回。
+# 實測個人戶口只返回其餘 tag（Currency 與兩個 PnL tag 被略過、不報錯），幣種附在每個金額的
+# currency 欄上；多幣種帳戶則各幣種分行返回，故 Currency tag 仍保留，後端有返回時即可用作基準。
+IB_ACCOUNT_TAGS = (
+    "AccountType,NetLiquidation,TotalCashValue,GrossPositionValue,AvailableFunds,BuyingPower,"
+    "InitMarginReq,MaintMarginReq,EquityWithLoanValue,UnrealizedPnL,RealizedPnL,Currency"
+)
+# tag → 統一金額欄位。IB 沒有「負債權益」對應 tag，該欄一律為 NaN。
+IB_FUND_TAGS = {
+    "NetLiquidation": "net_liquidation",
+    "TotalCashValue": "cash",
+    "GrossPositionValue": "market_value",
+    "AvailableFunds": "available_funds",
+    "BuyingPower": "buying_power",
+    "InitMarginReq": "init_margin",
+    "MaintMarginReq": "maint_margin",
+    "EquityWithLoanValue": "equity_with_loan",
+    "UnrealizedPnL": "unrealized_pnl",
+    "RealizedPnL": "realized_pnl",
+}
+
+
+def _acc_type_of(account_type: str) -> str:
+    """IB 的 AccountType → 統一戶口性質。
+
+    該 tag 的取值為 C/M/INDIVIDUAL/LIMITED_MARGIN/PF/DEMO 等，只表明帳戶類別，未必含現金或保證金
+    （INDIVIDUAL 兩者皆可能），故只對明確寫法歸類，其餘原樣返回，不憑空判定。
+    """
+    text = account_type.strip().upper()
+    if text in ("C", "CASH"):
+        return ACC_CASH
+    if text in ("M", "MARGIN", "LIMITED_MARGIN", "PF"):
+        return ACC_MARGIN
+    return text.lower()
+
+
+def _primary_exchanges(details) -> list[str]:
+    """由個月份的掛牌結果取得交易所，主場排先（CONTFUT 一定要帶 exchange 先查得到）。"""
+    return sorted({cd.contract.exchange for cd in details if cd.contract.exchange}, key=is_secondary_exchange)
+
+
 def _duration(days: int) -> str:
     """日曆跨度 → IB 的 durationStr。一律向上取整到可用單位，多出的部分由呼叫端截尾。"""
     if days <= MAX_DAY_DURATION:
@@ -112,6 +158,8 @@ class IbBroker(SymbolBroker):
     stream_autypes = ("none",)
     # 期權不聲明：IB 的期權合約需完整結構（行權價、到期月、買賣方向），統一代碼無法唯一還原。
     kline_symbol_types = (STOCK, FUTURE, INDEX)
+    # 戶口性質由 AccountType tag 表明（C/M 等明確寫法），故兩種皆聲明。
+    acc_types = (ACC_CASH, ACC_MARGIN)
 
     def __init__(
         self,
@@ -143,7 +191,7 @@ class IbBroker(SymbolBroker):
 
     def list_futures(self, seeds: Iterable) -> list[dict]:
         """按種子 root 展開主連與所有到期月。"""
-        return self._run(lambda ib: self._collect(ib, seeds, self._future_contracts))
+        return self._run(lambda ib: self._collect_futures(ib, seeds))
 
     def list_indices(self, seeds: Iterable) -> list[dict]:
         """按種子符號解析指數。"""
@@ -156,23 +204,41 @@ class IbBroker(SymbolBroker):
                 rows.extend(await self._details(ib, contract, seed.market))
         return dedupe_rows(rows)
 
-    @staticmethod
-    def _future_contracts(seed):
-        # 主連以 CONTFUT 取得真實連續合約；個月份以 FUT 展開所有到期月。
-        return [Contract(secType="CONTFUT", symbol=seed.root), Contract(secType="FUT", symbol=seed.root)]
+    async def _collect_futures(self, ib: IB, seeds: Iterable) -> list[dict]:
+        """個月份以 FUT 展開所有到期月，主連其後以該 root 的掛牌交易所查 CONTFUT。
+
+        順序不能對調：CONTFUT 不帶 exchange 一律返回「No security definition found」，而 exchange 只能
+        從同 root 的 FUT 結果取得。同一 root 的 CONTFUT 喺唔同場所返回同一 conId，故取首個主場即止。
+        """
+        rows: list[dict] = []
+        for seed in seeds:
+            months = await self._req_details(ib, Contract(secType="FUT", symbol=seed.root))
+            rows.extend(self._rows(months, "FUT", seed.market))
+            for exchange in _primary_exchanges(months):
+                continuous = await self._req_details(
+                    ib, Contract(secType="CONTFUT", symbol=seed.root, exchange=exchange))
+                if continuous:
+                    rows.extend(self._rows(continuous, "CONTFUT", seed.market))
+                    break
+        return dedupe_rows(rows)
 
     @staticmethod
     def _index_contracts(seed):
         return [Contract(secType="IND", symbol=seed.symbol)]
 
     async def _details(self, ib: IB, contract: Contract, hint_market: str) -> list[dict]:
+        return self._rows(await self._req_details(ib, contract), contract.secType, hint_market)
+
+    async def _req_details(self, ib: IB, contract: Contract):
         try:
-            details = await asyncio.wait_for(ib.reqContractDetailsAsync(contract), timeout=self.timeout)
+            return await asyncio.wait_for(ib.reqContractDetailsAsync(contract), timeout=self.timeout)
         except asyncio.TimeoutError:
             raise RuntimeError(f"timeout: IB reqContractDetails {contract.symbol} 超過 {self.timeout}s") from None
+
+    def _rows(self, details, sec_type: str, hint_market: str) -> list[dict]:
         rows = []
         for cd in details:
-            row = self._row_from_details(cd, contract.secType, hint_market)
+            row = self._row_from_details(cd, sec_type, hint_market)
             if row:
                 rows.append(row)
         return rows
@@ -273,11 +339,22 @@ class IbBroker(SymbolBroker):
 
         不用 qualifyContracts：同一合約常在多處掛牌（CME 與 QBALGO），qualify 會直接
         回報 Ambiguous。reqContractDetails 可取回全部掛牌，再自行剔除次要場所。
+
+        主連（CONTFUT）一定要帶掛牌交易所，故先以同 root 的 FUT 取得交易所，再逐個嘗試。
         """
+        if contract.secType == "CONTFUT" and not contract.exchange:
+            months = await self._req_details(
+                ib, Contract(secType="FUT", symbol=contract.symbol, currency=contract.currency))
+            for exchange in _primary_exchanges(months):
+                matched = await self._best_match(ib, Contract(
+                    secType="CONTFUT", symbol=contract.symbol, exchange=exchange, currency=contract.currency))
+                if matched is not None:
+                    return matched
+            return None
         try:
-            details = await asyncio.wait_for(ib.reqContractDetailsAsync(contract), timeout=self.timeout)
-        except asyncio.TimeoutError:
-            raise RuntimeError(f"timeout: IB 解析 {contract.symbol} 超過 {self.timeout}s") from None
+            details = await self._req_details(ib, contract)
+        except RuntimeError:
+            raise  # 超時屬連線問題，要向上抛出，不能當做「無此合約」
         except Exception:
             return None  # 該類型無此合約（IB 以 Error 200 回報），改試下一個候選
         primary = [cd for cd in details if not is_secondary_exchange(cd.contract.exchange or "")]
@@ -453,6 +530,59 @@ class IbBroker(SymbolBroker):
         for _code, bars, handler, _merger in sessions:
             bars.updateEvent -= handler
             ib.cancelHistoricalData(bars)
+
+    # ---------- 戶口 ----------
+
+    def get_accounts(self, currency: str | None = None) -> list[dict]:
+        """戶口清單與資金：accountSummary 一次取回所連後端能看到的所有戶口。
+
+        IB 的真實與模擬由所連 Gateway/TWS 決定，接口本身沒有這個維度，故一律按真實戶口返回。
+        acc_type 由 AccountType tag 映射（見 _acc_type_of），無法判定的類別原樣返回。currency 取每
+        個金額自帶的結算幣，多幣種帳戶按幣種各列一欄；currency 參數只作篩選，一律不做匯率換算。
+        IB 沒有戶口狀態與負債權益欄位，該兩欄為空字串與 NaN，不以任何數字湊出。
+        """
+        summary = self._run(lambda ib: self._account_summary(ib))
+        acc_type: dict[str, str] = {}
+        base_ccy: dict[str, str] = {}
+        funds: dict[tuple[str, str], dict] = {}
+        for value in summary:
+            account = str(value.account)
+            if value.tag == "AccountType":
+                acc_type[account] = _acc_type_of(str(value.value))
+            elif value.tag == "Currency":
+                base_ccy[account] = str(value.value).upper()
+            elif value.tag in IB_FUND_TAGS:
+                # 每個金額自帶其結算幣，故按（戶口, 幣種）分組：多幣種帳戶各幣種另列一欄，同一幣種
+                # 的多項 tag 則合併到同一欄。
+                funds.setdefault((account, str(value.currency).upper()), {})[IB_FUND_TAGS[value.tag]] = value.value
+
+        rows = []
+        for (account, ccy), values in funds.items():
+            ccy = ccy or base_ccy.get(account, "")
+            if currency and currency.upper() != ccy:
+                continue
+            rows.append(account_row(
+                source=self.source,
+                account_id=account,
+                acc_type=acc_type.get(account, ""),
+                status="",
+                currency=ccy,
+                funds=values,
+            ))
+        return rows
+
+    @staticmethod
+    async def _account_summary(ib: IB) -> list:
+        """以自組的 tag 清單請求 accountSummary（ib_async 的預設清單缺少需要的三個 tag）。
+
+        wrapper 的 acctSummary 會把多次請求的結果合併保留，不清空會把上一次查詢的舊值一併返回。
+        """
+        req_id = ib.client.getReqId()
+        future = ib.wrapper.startReq(req_id)
+        ib.wrapper.acctSummary.clear()
+        ib.client.reqAccountSummary(req_id, "All", IB_ACCOUNT_TAGS)
+        await future
+        return list(ib.wrapper.acctSummary.values())
 
     # ---------- 內部 ----------
 

@@ -18,11 +18,14 @@ import futu
 from ..codes import FUTURE, INDEX, OPTION, STOCK, CodeError, currency_of, parse_code
 from ..config import get_settings
 from .base import (
+    ACC_CASH,
+    ACC_MARGIN,
     CAP_FUTURE,
     CAP_INDEX,
     CAP_STOCK,
     BarMerger,
     SymbolBroker,
+    account_row,
     align_ts,
     kline_row,
     span_days,
@@ -64,6 +67,24 @@ FUTU_KTYPE = {
 FUTU_AUTYPE = {"qfq": "qfq", "hfq": "hfq", "none": "None"}
 FUTU_PAGE_MAX = 1000  # get_cur_kline 單次上限；此版本無分頁參數，更多 bar 需改用 request_history_kline
 
+# get_acc_list 的 acc_type → 統一詞表（實測該欄為 CASH/MARGIN，與 trd_env 各自獨立）。
+ACC_OF_ACC_TYPE = {"CASH": ACC_CASH, "MARGIN": ACC_MARGIN}
+
+
+def _account_currency(acc: dict) -> str:
+    """未指定幣種時的依據：accinfo_query 一定要傳幣種，故取該戶口首個授權市場的結算幣。
+
+    實測 trdmarket_auth 為市場代碼的 list（['HK', 'US', 'HKCC', 'SG', 'HKFUND', 'USFUND', 'JP']），
+    順序即富途的排序，故取首個能映射到結算幣的市場；基金市場（HKFUND/USFUND）與 HKCC 沒有結算幣
+    映射，跳過不計。
+    """
+    for market in acc.get("trdmarket_auth") or []:
+        try:
+            return currency_of(market)
+        except CodeError:
+            continue
+    raise ValueError(f"currency_undetermined: 戶口 {acc.get('acc_id')} 無授權市場，請傳 currency")
+
 
 class FutuBroker(SymbolBroker):
     """富途 OpenAPI 標的來源。"""
@@ -77,6 +98,8 @@ class FutuBroker(SymbolBroker):
     # 四類品種的 K 線接口皆可用（期權需先有正股的期權行情權限；美股期貨與指數另受賬戶
     # 行情權限限制，缺權限時由上游返回「行情权限不足」）。
     kline_symbol_types = (STOCK, FUTURE, INDEX, OPTION)
+    # 富途的 get_acc_list 以 acc_type 欄位表明現金或保證金戶口（實測 CASH/MARGIN 皆存在）。
+    acc_types = (ACC_CASH, ACC_MARGIN)
 
     def __init__(self, host: str | None = None, port: int | None = None):
         settings = get_settings()
@@ -226,6 +249,80 @@ class FutuBroker(SymbolBroker):
             self._ctx.stop()
             self._ctx.unsubscribe(list(codes), [getattr(futu.SubType, FUTU_KTYPE[ktype])])
         return {code: mergers[code].frame() for code in codes}
+
+    # ---------- 戶口 ----------
+
+    def get_accounts(self, currency: str | None = None) -> list[dict]:
+        """戶口清單與資金：get_acc_list 定戶口性質，accinfo_query 取該戶口的資金。
+
+        只取 trd_env=REAL 且 acc_status=ACTIVE 的戶口：統一格式不再區分 real/simulate，模擬戶口的
+        紙面資金不應混入真實資金；INACTIVE 為已停用的戶口（實測開過又取消的戶口即為 INACTIVE），
+        既不可交易，accinfo_query 亦取不到資金。
+        富途以 acc_type（CASH/MARGIN）表明戶口性質，原樣映射為統一的 acc_type。accinfo_query 必須
+        傳幣種且沒有跨幣種匯總（實測其數字只屬該幣種，另有各幣種明細欄），故未指定 currency 時以
+        該戶口首個授權市場的結算幣為準。富途以字串 "N/A" 表示無值，一律還原為 NaN；富途沒有的欄位
+        （負債權益）亦為 NaN，不以任何數字湊出。
+        """
+        ctx = futu.OpenSecTradeContext(
+            filter_trdmarket=futu.TrdMarket.NONE,
+            host=self.host,
+            port=self.port,
+            security_firm=futu.SecurityFirm.FUTUSECURITIES,
+        )
+        try:
+            ret, listing = ctx.get_acc_list()
+            if ret != 0:
+                raise RuntimeError(f"get_acc_list: {listing}")
+            rows: list[dict] = []
+            errors: list[str] = []
+            for acc in listing.to_dict("records"):
+                if str(acc["trd_env"]) != "REAL" or str(acc["acc_status"]) != "ACTIVE":
+                    continue
+                funds, error = self._acc_funds(ctx, acc, currency)
+                if funds is None:
+                    errors.append(f"acc_id={acc['acc_id']}: {error}")
+                    continue
+                rows.append(account_row(
+                    source=self.source,
+                    account_id=acc["acc_id"],
+                    acc_type=ACC_OF_ACC_TYPE.get(str(acc["acc_type"]), str(acc["acc_type"]).lower()),
+                    status=str(acc["acc_status"]),
+                    currency=funds["currency"],
+                    funds=funds,
+                ))
+            if not rows and errors:
+                raise RuntimeError("accinfo_query: " + "；".join(errors))
+            return rows
+        finally:
+            ctx.close()
+
+    def _acc_funds(self, ctx, acc: dict, currency: str | None) -> tuple[dict | None, str]:
+        """單一戶口的資金（accinfo_query）。取不到時返回 (None, 原因)。"""
+        try:
+            ccy = currency or _account_currency(acc)
+        except ValueError as exc:
+            return None, str(exc)
+        ret, df = ctx.accinfo_query(
+            trd_env=futu.TrdEnv.REAL,
+            acc_id=acc["acc_id"],
+            currency=ccy,
+            refresh_cache=True,  # 不強制刷新時可能返回舊值（實測模擬戶口更會回報「此数据暂时还未准备好」）
+        )
+        if ret != 0 or df.empty:
+            return None, str(df)
+        item = df.to_dict("records")[0]
+        return {
+            "currency": str(item.get("currency") or ccy),
+            "net_liquidation": item.get("total_assets"),  # 富途的總資產即淨資產值
+            "cash": item.get("cash"),
+            "market_value": item.get("market_val"),
+            "available_funds": item.get("available_funds"),
+            "buying_power": item.get("power"),
+            "init_margin": item.get("initial_margin"),
+            "maint_margin": item.get("maintenance_margin"),
+            "unrealized_pnl": item.get("unrealized_pl"),
+            "realized_pnl": item.get("realized_pl"),
+        }, ""
 
     # ---------- 內部 ----------
 

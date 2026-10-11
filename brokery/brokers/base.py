@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import math
 import time
 from abc import ABC
 from collections.abc import Iterable
@@ -42,6 +43,32 @@ K_COLUMNS = [
     "turnover",
     "source",
 ]
+
+# 統一戶口欄位。只以 acc_type 區分戶口性質（cash/margin）；不再區分戶口環境（real/simulate），
+# 各適配器一律只返回真實戶口（IB 的真實與模擬由所連 Gateway 決定，本身沒有這個維度；富途與
+# Tiger 的模擬戶口因此不列入）。金額一律以 currency 所示幣種計，各券商以其原生匯總幣種為準，
+# 不做匯率換算（嚴禁為湊齊而造數）；該券商沒有對應欄位者為 NaN，例如 Webull 無淨資產匯總。
+ACCOUNT_COLUMNS = [
+    "source",
+    "account_id",
+    "acc_type",
+    "status",
+    "currency",
+    "net_liquidation",
+    "cash",
+    "market_value",
+    "available_funds",
+    "buying_power",
+    "init_margin",
+    "maint_margin",
+    "equity_with_loan",
+    "unrealized_pnl",
+    "realized_pnl",
+]
+
+# 戶口性質的統一詞表。各券商的原生寫法由適配器映射到此處（富途 acc_type、Tiger capability、
+# Webull account_type（MRGN）、IB AccountType）。無法判斷的寫法一律原樣返回，不憑空歸類。
+ACC_CASH, ACC_MARGIN = "cash", "margin"
 
 # 統一 ktype 詞表 → 每根 bar 的分鐘數。日/周/月以分鐘計，方便 IB 由 bar 數換算時間跨度。
 BAR_MINUTES = {
@@ -198,6 +225,41 @@ def kline_row(
     }
 
 
+def account_num(value) -> float:
+    """券商的金額欄位統一為 float；無值一律為 NaN。
+
+    兩家的缺失寫法不同（實測富途 accinfo_query 以字串 "N/A" 表示無值、Tiger 的 Account 以 inf
+    表示該幣種無此項），直接返回會把「無資料」當成 0 或 inf，故一律還原為 NaN。
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+    return number if math.isfinite(number) else float("nan")
+
+
+def account_row(
+    source: str,
+    account_id,
+    acc_type: str,
+    status: str,
+    currency: str,
+    funds: dict | None = None,
+) -> dict:
+    """依統一戶口欄位順序構造一列。funds 只填該券商有的金額欄位，其餘為 NaN（不假造）。"""
+    row = {
+        "source": source,
+        "account_id": str(account_id),
+        "acc_type": acc_type,
+        "status": status,
+        "currency": currency,
+    }
+    for column in ACCOUNT_COLUMNS:
+        if column not in row:
+            row[column] = account_num((funds or {}).get(column))
+    return row
+
+
 class BarMerger:
     """按 ts 合併各券商推送的 bar，只保留最近 count 根，並判斷最新一根有否變化。
 
@@ -267,6 +329,9 @@ class SymbolBroker(ABC):
     # 可取 K 線的品種（見 codes.classify_symbol）。預設只聲明股票，各適配器按實測結果擴寬；
     # 未聲明的品種由 core 明確拒绝，嚴禁把期權或指數當股票送進上游等它報錯。
     kline_symbol_types: tuple[str, ...] = (STOCK,)
+    # 可返回的戶口性質（cash/margin）。未聲明的值由 core 明確拒绝，嚴禁把券商沒有的戶口憑空
+    # 造出來。一律只返回真實且可用的戶口（模擬戶口與已停用戶口不列入）。
+    acc_types: tuple[str, ...] = ()
 
     def connect(self) -> None:
         """建立與後端的連線。以每次呼叫自行管理連線的後端可沿用預設空實作。"""
@@ -312,6 +377,11 @@ class SymbolBroker(ABC):
         返回各代碼最終的 bar 列表。
         """
         raise NotImplementedError(f"{self.source} 不提供 K 線串流")
+
+    def get_accounts(self, currency: str | None = None) -> list[dict]:
+        """取該券商的戶口清單與資金。只返回真實且已啟用的戶口；currency 為指定幣種，
+        不指定時以券商原生匯總幣種為準。"""
+        raise NotImplementedError(f"{self.source} 不提供戶口資料")
 
     def make_row(
         self,

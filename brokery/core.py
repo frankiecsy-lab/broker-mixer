@@ -1,8 +1,8 @@
-"""Brokery：多券商標的清單與 K 線的統一入口。
+"""Brokery：多券商標的清單、K 線與戶口的統一入口。
 
 對外只有一個 class。所有方法一律返回 {"status": bool, "data": DataFrame, "message": str}，
-其中 data 的欄位固定為 brokers.base.COLUMNS（清單）或 brokers.base.K_COLUMNS（K 線），
-code 一律為統一代碼（見 codes 模組）。
+其中 data 的欄位固定為 brokers.base.COLUMNS（清單）、brokers.base.K_COLUMNS（K 線）或
+brokers.base.ACCOUNT_COLUMNS（戶口），code 一律為統一代碼（見 codes 模組）。
 
 各券商的能力並不對稱，由 capabilities 調度而非強行湊齊：股票、期貨與指數的批量清單均由
 富途按（市場, 證券類型）一次取全；IB 依種子展開所有到期月與交易所，並負責代碼轉換。某類
@@ -16,7 +16,15 @@ from collections.abc import Iterable
 import pandas as pd
 
 from . import store, universe
-from .brokers.base import COLUMNS, K_COLUMNS, SymbolBroker, dedupe_rows
+from .brokers.base import (
+    ACC_CASH,
+    ACC_MARGIN,
+    ACCOUNT_COLUMNS,
+    COLUMNS,
+    K_COLUMNS,
+    SymbolBroker,
+    dedupe_rows,
+)
 from .brokers.futu_broker import FutuBroker
 from .brokers.ib_broker import IbBroker
 from .brokers.tiger_broker import TigerBroker
@@ -29,6 +37,9 @@ DEFAULT_SOURCES = ("futu", "ib", "tiger", "webull")
 
 # 預設只取港美兩市：全市場（含滬深日馬澳新加）動輒數萬條，需時自行傳入 markets。
 DEFAULT_STOCK_MARKETS = ("HK", "US")
+
+# 戶口性質篩選的取值（all 為不篩選）。戶口環境不再區分：各券商一律只返回真實戶口。
+ACC_FILTERS = ("all", ACC_CASH, ACC_MARGIN)
 
 
 def _frame(rows: list[dict]) -> pd.DataFrame:
@@ -44,8 +55,16 @@ def _fail(message: str) -> dict:
     return {"status": False, "data": _frame([]), "message": message}
 
 
+def _accounts_ok(rows: list[dict], message: str) -> dict:
+    return {"status": True, "data": pd.DataFrame(rows, columns=ACCOUNT_COLUMNS), "message": message}
+
+
+def _accounts_fail(message: str) -> dict:
+    return {"status": False, "data": pd.DataFrame([], columns=ACCOUNT_COLUMNS), "message": message}
+
+
 class Brokery:
-    """以統一代碼格式取得標的清單與 K 線。"""
+    """以統一代碼格式取得標的清單與 K 線，並取得各券商的戶口與資金。"""
 
     def __init__(self, sources: Iterable[str] = DEFAULT_SOURCES, autype: str = "qfq"):
         """autype 為 K 線的預設複權模式（qfq/hfq/none），逐次呼叫可用 get_kline 的參數覆蓋。
@@ -252,6 +271,58 @@ class Brokery:
             ),
         }
 
+    # ---------- 戶口 ----------
+
+    def get_accounts(
+        self,
+        broker: str | None = None,
+        acc_type: str = "all",
+        currency: str | None = None,
+    ) -> dict:
+        """戶口清單與資金，四家一律以 brokers.base.ACCOUNT_COLUMNS 為欄位。
+
+        一律只返回真實且已啟用的戶口，不區分 real/simulate：IB 的真實與模擬由所連 Gateway 決定，
+        本身沒有這個維度；富途與 Tiger 的模擬戶口、富途的已停用戶口因此不列入。
+        acc_type 為戶口性質（all/cash/margin），是返回欄位，不傳即全部列回；filter 只在本處做一次，
+        各券商只返回自己聲明的 acc_type（見 SymbolBroker.acc_types），要求了不支持的值即明確返回
+        status=False，不會憑空造出戶口。
+
+        broker 省略時查所有已啟用的券商，個別券商連線失敗或沒有該類戶口時仍返回已取得的戶口，並在
+        message 中逐項說明。currency 指定時金額以該幣種計（Webull 改讀該幣種的明細），省略時以各券商
+        原生匯總幣種為準，一律不做匯率換算；該券商沒有對應欄位者為 NaN（如 Webull 無淨資產匯總）。
+        """
+        if acc_type not in ACC_FILTERS:
+            return _accounts_fail(f"bad_acc_type: {acc_type}，可取 {'/'.join(ACC_FILTERS)}")
+        if broker is None:
+            adapters = list(self._brokers.values())
+        else:
+            adapter = self._brokers.get(broker)
+            if adapter is None:
+                return _accounts_fail(f"unknown_source: {broker}；已啟用 {', '.join(self._brokers) or '無'}")
+            adapters = [adapter]
+
+        rows: list[dict] = []
+        notes: list[str] = []
+        for adapter in adapters:
+            if acc_type != "all" and acc_type not in adapter.acc_types:
+                notes.append(
+                    f"acc_type_unsupported: {adapter.source} 沒有 {acc_type} 戶口"
+                    f"（{adapter.source} 只有 {'/'.join(adapter.acc_types) or '無'}）"
+                )
+                continue
+            try:
+                rows.extend(adapter.get_accounts(currency))
+            except Exception as exc:
+                notes.append(f"{adapter.source}: {type(exc).__name__}: {exc}")
+
+        rows = [row for row in rows if acc_type == "all" or row["acc_type"] == acc_type]
+        rows = _dedupe_accounts(rows)
+        detail = f"{len(rows)} 個戶口（來源 {', '.join(a.source for a in adapters)}）"
+        if not rows:
+            return _accounts_fail("no_account: " + "；".join(notes or ["沒有符合條件的戶口"]))
+        message = f"ok: {detail}" if not notes else f"ok（{detail}，部分券商未完成）" + "；".join(notes)
+        return _accounts_ok(rows, message)
+
     # ---------- 離線讀取 ----------
 
     def get_code(self, name: str = store.CODES_DATASET) -> dict:
@@ -286,6 +357,18 @@ class Brokery:
             return _fail(f"{label}取得失敗：" + "；".join(errors))
         message = "ok" if not errors else f"ok（{len(rows)} 條，部分券商失敗）" + "；".join(errors)
         return _ok(rows, message)
+
+
+def _dedupe_accounts(rows: list[dict]) -> list[dict]:
+    """同一戶口的同一幣種只保留一列，保留先到的那一列。
+
+    幣種要列入鍵：IB 的多幣種戶口按幣種各列一欄（各欄的金額互不重疊），只按戶口去重會把它們合併
+    成一欄而丟掉其餘幣種的資金。
+    """
+    best: dict[tuple, dict] = {}
+    for row in rows:
+        best.setdefault((row["source"], row["account_id"], row["currency"]), row)
+    return list(best.values())
 
 
 def _pick(seeds: tuple, wanted: Iterable[str] | None, attr: str) -> list:

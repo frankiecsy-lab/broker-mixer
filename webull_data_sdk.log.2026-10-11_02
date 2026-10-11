@@ -1,0 +1,1561 @@
+58660 2026-10-11 00:17:13,160 webull.core.client ERROR ServerException occurred. Host:api.webull.hk SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/openapi/config",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "GET",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.620ddb3f3dfd05236bd4cf7a53150e81",
+    "x-timestamp": "2026-10-10T16:17:12Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "1cefc6ce-06be-594b-8f98-c4359ccd1f09",
+    "x-signature": "dHD3ZaXFQqaDfsmip5tWG9bBu921DiBgJBCOjK8SW3Q=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-webull-client-source": "sdk"
+  },
+  "_body_params": null,
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": null,
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.hk",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'message': 'Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment', 'error_code': 'UNAUTHORIZED'} ServerException:HTTP Status: 401, Code: UNAUTHORIZED, Msg: Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment, RequestID: 51342869-9728-48a7-995e-91445889d41c
+58660 2026-10-11 00:17:13,161 webull.core.client ERROR get_response exception. {
+  "error_code": "UNAUTHORIZED",
+  "error_msg": "Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment",
+  "http_status": 401,
+  "request_id": "51342869-9728-48a7-995e-91445889d41c"
+}
+58660 2026-10-11 00:17:13,425 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+58660 2026-10-11 00:17:13,425 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+58660 2026-10-11 00:17:13,426 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+58660 2026-10-11 00:17:13,426 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+58660 2026-10-11 00:17:13,427 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+58660 2026-10-11 00:17:13,427 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+58660 2026-10-11 00:17:13,427 webull.core.http.initializer.token.token_manager INFO load_token_from_local file not exists, file:D:\coding\brokery\brokery\data\webull_token\token.txt.
+58660 2026-10-11 00:17:13,427 webull.core.http.initializer.token.token_manager INFO load_token_from_local file not exists, file:D:\coding\brokery\brokery\data\webull_token\token.txt.
+58660 2026-10-11 00:17:14,061 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+58660 2026-10-11 00:17:14,061 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+58660 2026-10-11 00:17:14,062 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server started check_token loop. token:9b4cdc******45b5f0 duration_seconds:30 interval_seconds:5
+58660 2026-10-11 00:17:14,062 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server started check_token loop. token:9b4cdc******45b5f0 duration_seconds:30 interval_seconds:5
+58660 2026-10-11 00:17:14,241 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+58660 2026-10-11 00:17:14,241 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+58660 2026-10-11 00:17:14,242 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 0s / 30s). For more details, please visit the OpenAPI official website.
+58660 2026-10-11 00:17:14,242 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 0s / 30s). For more details, please visit the OpenAPI official website.
+58660 2026-10-11 00:17:19,398 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+58660 2026-10-11 00:17:19,398 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+58660 2026-10-11 00:17:19,398 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 5s / 30s). For more details, please visit the OpenAPI official website.
+58660 2026-10-11 00:17:19,398 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 5s / 30s). For more details, please visit the OpenAPI official website.
+58660 2026-10-11 00:17:24,329 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+58660 2026-10-11 00:17:24,329 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+58660 2026-10-11 00:17:24,329 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 10s / 30s). For more details, please visit the OpenAPI official website.
+58660 2026-10-11 00:17:24,329 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 10s / 30s). For more details, please visit the OpenAPI official website.
+58660 2026-10-11 00:17:29,335 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+58660 2026-10-11 00:17:29,335 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+58660 2026-10-11 00:17:29,335 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 15s / 30s). For more details, please visit the OpenAPI official website.
+58660 2026-10-11 00:17:29,335 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 15s / 30s). For more details, please visit the OpenAPI official website.
+58660 2026-10-11 00:17:34,393 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+58660 2026-10-11 00:17:34,393 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+58660 2026-10-11 00:17:34,394 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 20s / 30s). For more details, please visit the OpenAPI official website.
+58660 2026-10-11 00:17:34,394 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 20s / 30s). For more details, please visit the OpenAPI official website.
+58660 2026-10-11 00:17:39,267 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+58660 2026-10-11 00:17:39,267 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+58660 2026-10-11 00:17:39,268 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 25s / 30s). For more details, please visit the OpenAPI official website.
+58660 2026-10-11 00:17:39,268 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 25s / 30s). For more details, please visit the OpenAPI official website.
+58660 2026-10-11 00:17:44,336 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+58660 2026-10-11 00:17:44,336 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+58660 2026-10-11 00:17:44,336 webull.core.http.initializer.token.token_manager WARNING fetch_token_from_server check_token loop completed. reached the maximum retries without passing validation, returning create_access_token. For more details, please visit the OpenAPI official website.
+58660 2026-10-11 00:17:44,336 webull.core.http.initializer.token.token_manager WARNING fetch_token_from_server check_token loop completed. reached the maximum retries without passing validation, returning create_access_token. For more details, please visit the OpenAPI official website.
+58660 2026-10-11 00:17:44,337 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+58660 2026-10-11 00:17:44,337 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+58660 2026-10-11 00:17:44,337 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+58660 2026-10-11 00:17:44,337 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+58660 2026-10-11 00:17:44,338 webull.core.http.initializer.token.token_manager ERROR init_token status not verified error. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+58660 2026-10-11 00:17:44,338 webull.core.http.initializer.token.token_manager ERROR init_token status not verified error. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+53900 2026-10-11 00:19:38,355 webull.core.client ERROR ServerException occurred. Host:api.webull.com SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/openapi/config",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "GET",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.620ddb3f3dfd05236bd4cf7a53150e81",
+    "x-timestamp": "2026-10-10T16:19:37Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "c273271f-da03-55a2-89fc-0759cf89cfd4",
+    "x-signature": "SugbhHrNBMMkVcD5B+Kj8ykAHWsuNPcjIBkZeLyTZfQ=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-webull-client-source": "sdk"
+  },
+  "_body_params": null,
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": null,
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.com",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'UNAUTHORIZED', 'message': 'Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment'} ServerException:HTTP Status: 401, Code: UNAUTHORIZED, Msg: Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment, RequestID: a0ee4c05-4fe5-4046-8a63-90dbc705bc29
+53900 2026-10-11 00:19:38,356 webull.core.client ERROR get_response exception. {
+  "error_code": "UNAUTHORIZED",
+  "error_msg": "Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment",
+  "http_status": 401,
+  "request_id": "a0ee4c05-4fe5-4046-8a63-90dbc705bc29"
+}
+53900 2026-10-11 00:19:38,632 webull.core.client ERROR ServerException occurred. Host:api.webull.hk SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/openapi/config",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "GET",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.620ddb3f3dfd05236bd4cf7a53150e81",
+    "x-timestamp": "2026-10-10T16:19:38Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "d90f8071-5d02-539b-9f97-431bdfdd8909",
+    "x-signature": "rXobT0MdisKwYdOY1zBIdJwY79W51DfXvKPgiTEsZFw=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-webull-client-source": "sdk"
+  },
+  "_body_params": null,
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": null,
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.hk",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'UNAUTHORIZED', 'message': 'Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment'} ServerException:HTTP Status: 401, Code: UNAUTHORIZED, Msg: Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment, RequestID: c9e5c212-24dd-49a0-b9fa-44b5af58a130
+53900 2026-10-11 00:19:38,632 webull.core.client ERROR ServerException occurred. Host:api.webull.hk SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/openapi/config",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "GET",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.620ddb3f3dfd05236bd4cf7a53150e81",
+    "x-timestamp": "2026-10-10T16:19:38Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "d90f8071-5d02-539b-9f97-431bdfdd8909",
+    "x-signature": "rXobT0MdisKwYdOY1zBIdJwY79W51DfXvKPgiTEsZFw=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-webull-client-source": "sdk"
+  },
+  "_body_params": null,
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": null,
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.hk",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'UNAUTHORIZED', 'message': 'Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment'} ServerException:HTTP Status: 401, Code: UNAUTHORIZED, Msg: Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment, RequestID: c9e5c212-24dd-49a0-b9fa-44b5af58a130
+53900 2026-10-11 00:19:38,632 webull.core.client ERROR get_response exception. {
+  "error_code": "UNAUTHORIZED",
+  "error_msg": "Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment",
+  "http_status": 401,
+  "request_id": "c9e5c212-24dd-49a0-b9fa-44b5af58a130"
+}
+53900 2026-10-11 00:19:38,632 webull.core.client ERROR get_response exception. {
+  "error_code": "UNAUTHORIZED",
+  "error_msg": "Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment",
+  "http_status": 401,
+  "request_id": "c9e5c212-24dd-49a0-b9fa-44b5af58a130"
+}
+53900 2026-10-11 00:19:39,058 webull.core.client ERROR ServerException occurred. Host:api.webull.com.sg SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/openapi/config",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "GET",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.620ddb3f3dfd05236bd4cf7a53150e81",
+    "x-timestamp": "2026-10-10T16:19:38Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "902b3f46-124a-51c6-b876-b6c0eef143d2",
+    "x-signature": "N3XqKvaHSfHp3G9/6Jk4WDUC1aNAWI6Ak1Xyqb8pKuc=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-webull-client-source": "sdk"
+  },
+  "_body_params": null,
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": null,
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.com.sg",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'UNAUTHORIZED', 'message': 'Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment'} ServerException:HTTP Status: 401, Code: UNAUTHORIZED, Msg: Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment, RequestID: 51ed8ec0-2725-4fe3-bb4d-43a25a0f859e
+53900 2026-10-11 00:19:39,058 webull.core.client ERROR ServerException occurred. Host:api.webull.com.sg SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/openapi/config",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "GET",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.620ddb3f3dfd05236bd4cf7a53150e81",
+    "x-timestamp": "2026-10-10T16:19:38Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "902b3f46-124a-51c6-b876-b6c0eef143d2",
+    "x-signature": "N3XqKvaHSfHp3G9/6Jk4WDUC1aNAWI6Ak1Xyqb8pKuc=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-webull-client-source": "sdk"
+  },
+  "_body_params": null,
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": null,
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.com.sg",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'UNAUTHORIZED', 'message': 'Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment'} ServerException:HTTP Status: 401, Code: UNAUTHORIZED, Msg: Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment, RequestID: 51ed8ec0-2725-4fe3-bb4d-43a25a0f859e
+53900 2026-10-11 00:19:39,058 webull.core.client ERROR ServerException occurred. Host:api.webull.com.sg SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/openapi/config",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "GET",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.620ddb3f3dfd05236bd4cf7a53150e81",
+    "x-timestamp": "2026-10-10T16:19:38Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "902b3f46-124a-51c6-b876-b6c0eef143d2",
+    "x-signature": "N3XqKvaHSfHp3G9/6Jk4WDUC1aNAWI6Ak1Xyqb8pKuc=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-webull-client-source": "sdk"
+  },
+  "_body_params": null,
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": null,
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.com.sg",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'UNAUTHORIZED', 'message': 'Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment'} ServerException:HTTP Status: 401, Code: UNAUTHORIZED, Msg: Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment, RequestID: 51ed8ec0-2725-4fe3-bb4d-43a25a0f859e
+53900 2026-10-11 00:19:39,059 webull.core.client ERROR get_response exception. {
+  "error_code": "UNAUTHORIZED",
+  "error_msg": "Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment",
+  "http_status": 401,
+  "request_id": "51ed8ec0-2725-4fe3-bb4d-43a25a0f859e"
+}
+53900 2026-10-11 00:19:39,059 webull.core.client ERROR get_response exception. {
+  "error_code": "UNAUTHORIZED",
+  "error_msg": "Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment",
+  "http_status": 401,
+  "request_id": "51ed8ec0-2725-4fe3-bb4d-43a25a0f859e"
+}
+53900 2026-10-11 00:19:39,059 webull.core.client ERROR get_response exception. {
+  "error_code": "UNAUTHORIZED",
+  "error_msg": "Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment",
+  "http_status": 401,
+  "request_id": "51ed8ec0-2725-4fe3-bb4d-43a25a0f859e"
+}
+53900 2026-10-11 00:19:40,005 webull.core.client ERROR ServerException occurred. Host:api.webull.com.au SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/openapi/config",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "GET",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.620ddb3f3dfd05236bd4cf7a53150e81",
+    "x-timestamp": "2026-10-10T16:19:39Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "b62cca12-6829-5938-ab75-0bbfad7089da",
+    "x-signature": "TY3juYS+8/96YucyP1f+sDDbkcroTwtbx6zniDhlJp0=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-webull-client-source": "sdk"
+  },
+  "_body_params": null,
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": null,
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.com.au",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'message': 'Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment', 'error_code': 'UNAUTHORIZED'} ServerException:HTTP Status: 401, Code: UNAUTHORIZED, Msg: Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment, RequestID: 8b6adba0-bf7b-4bcf-b43b-3fde73de3bfe
+53900 2026-10-11 00:19:40,005 webull.core.client ERROR ServerException occurred. Host:api.webull.com.au SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/openapi/config",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "GET",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.620ddb3f3dfd05236bd4cf7a53150e81",
+    "x-timestamp": "2026-10-10T16:19:39Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "b62cca12-6829-5938-ab75-0bbfad7089da",
+    "x-signature": "TY3juYS+8/96YucyP1f+sDDbkcroTwtbx6zniDhlJp0=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-webull-client-source": "sdk"
+  },
+  "_body_params": null,
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": null,
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.com.au",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'message': 'Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment', 'error_code': 'UNAUTHORIZED'} ServerException:HTTP Status: 401, Code: UNAUTHORIZED, Msg: Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment, RequestID: 8b6adba0-bf7b-4bcf-b43b-3fde73de3bfe
+53900 2026-10-11 00:19:40,005 webull.core.client ERROR ServerException occurred. Host:api.webull.com.au SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/openapi/config",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "GET",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.620ddb3f3dfd05236bd4cf7a53150e81",
+    "x-timestamp": "2026-10-10T16:19:39Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "b62cca12-6829-5938-ab75-0bbfad7089da",
+    "x-signature": "TY3juYS+8/96YucyP1f+sDDbkcroTwtbx6zniDhlJp0=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-webull-client-source": "sdk"
+  },
+  "_body_params": null,
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": null,
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.com.au",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'message': 'Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment', 'error_code': 'UNAUTHORIZED'} ServerException:HTTP Status: 401, Code: UNAUTHORIZED, Msg: Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment, RequestID: 8b6adba0-bf7b-4bcf-b43b-3fde73de3bfe
+53900 2026-10-11 00:19:40,005 webull.core.client ERROR ServerException occurred. Host:api.webull.com.au SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/openapi/config",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "GET",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.620ddb3f3dfd05236bd4cf7a53150e81",
+    "x-timestamp": "2026-10-10T16:19:39Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "b62cca12-6829-5938-ab75-0bbfad7089da",
+    "x-signature": "TY3juYS+8/96YucyP1f+sDDbkcroTwtbx6zniDhlJp0=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-webull-client-source": "sdk"
+  },
+  "_body_params": null,
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": null,
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.com.au",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'message': 'Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment', 'error_code': 'UNAUTHORIZED'} ServerException:HTTP Status: 401, Code: UNAUTHORIZED, Msg: Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment, RequestID: 8b6adba0-bf7b-4bcf-b43b-3fde73de3bfe
+53900 2026-10-11 00:19:40,006 webull.core.client ERROR get_response exception. {
+  "error_code": "UNAUTHORIZED",
+  "error_msg": "Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment",
+  "http_status": 401,
+  "request_id": "8b6adba0-bf7b-4bcf-b43b-3fde73de3bfe"
+}
+53900 2026-10-11 00:19:40,006 webull.core.client ERROR get_response exception. {
+  "error_code": "UNAUTHORIZED",
+  "error_msg": "Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment",
+  "http_status": 401,
+  "request_id": "8b6adba0-bf7b-4bcf-b43b-3fde73de3bfe"
+}
+53900 2026-10-11 00:19:40,006 webull.core.client ERROR get_response exception. {
+  "error_code": "UNAUTHORIZED",
+  "error_msg": "Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment",
+  "http_status": 401,
+  "request_id": "8b6adba0-bf7b-4bcf-b43b-3fde73de3bfe"
+}
+53900 2026-10-11 00:19:40,006 webull.core.client ERROR get_response exception. {
+  "error_code": "UNAUTHORIZED",
+  "error_msg": "Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment",
+  "http_status": 401,
+  "request_id": "8b6adba0-bf7b-4bcf-b43b-3fde73de3bfe"
+}
+53900 2026-10-11 00:19:41,199 webull.core.client ERROR ServerException occurred. Host:api.webull-uk.com SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/openapi/config",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "GET",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.620ddb3f3dfd05236bd4cf7a53150e81",
+    "x-timestamp": "2026-10-10T16:19:40Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "34de0f6c-1186-5c1b-ac1e-dc6216b1361e",
+    "x-signature": "YtI34xCVYYmBcy0BpY201UiQK3YgOX0g8VLosvjqmtU=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-webull-client-source": "sdk"
+  },
+  "_body_params": null,
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": null,
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull-uk.com",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'UNAUTHORIZED', 'message': 'Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment'} ServerException:HTTP Status: 401, Code: UNAUTHORIZED, Msg: Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment, RequestID: 7ff0950c-15d8-4c2d-a6ea-70969cf66844
+53900 2026-10-11 00:19:41,199 webull.core.client ERROR ServerException occurred. Host:api.webull-uk.com SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/openapi/config",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "GET",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.620ddb3f3dfd05236bd4cf7a53150e81",
+    "x-timestamp": "2026-10-10T16:19:40Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "34de0f6c-1186-5c1b-ac1e-dc6216b1361e",
+    "x-signature": "YtI34xCVYYmBcy0BpY201UiQK3YgOX0g8VLosvjqmtU=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-webull-client-source": "sdk"
+  },
+  "_body_params": null,
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": null,
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull-uk.com",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'UNAUTHORIZED', 'message': 'Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment'} ServerException:HTTP Status: 401, Code: UNAUTHORIZED, Msg: Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment, RequestID: 7ff0950c-15d8-4c2d-a6ea-70969cf66844
+53900 2026-10-11 00:19:41,199 webull.core.client ERROR ServerException occurred. Host:api.webull-uk.com SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/openapi/config",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "GET",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.620ddb3f3dfd05236bd4cf7a53150e81",
+    "x-timestamp": "2026-10-10T16:19:40Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "34de0f6c-1186-5c1b-ac1e-dc6216b1361e",
+    "x-signature": "YtI34xCVYYmBcy0BpY201UiQK3YgOX0g8VLosvjqmtU=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-webull-client-source": "sdk"
+  },
+  "_body_params": null,
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": null,
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull-uk.com",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'UNAUTHORIZED', 'message': 'Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment'} ServerException:HTTP Status: 401, Code: UNAUTHORIZED, Msg: Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment, RequestID: 7ff0950c-15d8-4c2d-a6ea-70969cf66844
+53900 2026-10-11 00:19:41,199 webull.core.client ERROR ServerException occurred. Host:api.webull-uk.com SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/openapi/config",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "GET",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.620ddb3f3dfd05236bd4cf7a53150e81",
+    "x-timestamp": "2026-10-10T16:19:40Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "34de0f6c-1186-5c1b-ac1e-dc6216b1361e",
+    "x-signature": "YtI34xCVYYmBcy0BpY201UiQK3YgOX0g8VLosvjqmtU=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-webull-client-source": "sdk"
+  },
+  "_body_params": null,
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": null,
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull-uk.com",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'UNAUTHORIZED', 'message': 'Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment'} ServerException:HTTP Status: 401, Code: UNAUTHORIZED, Msg: Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment, RequestID: 7ff0950c-15d8-4c2d-a6ea-70969cf66844
+53900 2026-10-11 00:19:41,199 webull.core.client ERROR ServerException occurred. Host:api.webull-uk.com SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/openapi/config",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "GET",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.620ddb3f3dfd05236bd4cf7a53150e81",
+    "x-timestamp": "2026-10-10T16:19:40Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "34de0f6c-1186-5c1b-ac1e-dc6216b1361e",
+    "x-signature": "YtI34xCVYYmBcy0BpY201UiQK3YgOX0g8VLosvjqmtU=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-webull-client-source": "sdk"
+  },
+  "_body_params": null,
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": null,
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull-uk.com",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'UNAUTHORIZED', 'message': 'Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment'} ServerException:HTTP Status: 401, Code: UNAUTHORIZED, Msg: Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment, RequestID: 7ff0950c-15d8-4c2d-a6ea-70969cf66844
+53900 2026-10-11 00:19:41,199 webull.core.client ERROR get_response exception. {
+  "error_code": "UNAUTHORIZED",
+  "error_msg": "Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment",
+  "http_status": 401,
+  "request_id": "7ff0950c-15d8-4c2d-a6ea-70969cf66844"
+}
+53900 2026-10-11 00:19:41,199 webull.core.client ERROR get_response exception. {
+  "error_code": "UNAUTHORIZED",
+  "error_msg": "Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment",
+  "http_status": 401,
+  "request_id": "7ff0950c-15d8-4c2d-a6ea-70969cf66844"
+}
+53900 2026-10-11 00:19:41,199 webull.core.client ERROR get_response exception. {
+  "error_code": "UNAUTHORIZED",
+  "error_msg": "Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment",
+  "http_status": 401,
+  "request_id": "7ff0950c-15d8-4c2d-a6ea-70969cf66844"
+}
+53900 2026-10-11 00:19:41,199 webull.core.client ERROR get_response exception. {
+  "error_code": "UNAUTHORIZED",
+  "error_msg": "Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment",
+  "http_status": 401,
+  "request_id": "7ff0950c-15d8-4c2d-a6ea-70969cf66844"
+}
+53900 2026-10-11 00:19:41,199 webull.core.client ERROR get_response exception. {
+  "error_code": "UNAUTHORIZED",
+  "error_msg": "Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment",
+  "http_status": 401,
+  "request_id": "7ff0950c-15d8-4c2d-a6ea-70969cf66844"
+}
+46500 2026-10-11 00:24:33,268 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+46500 2026-10-11 00:24:33,269 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+46500 2026-10-11 00:24:33,269 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+46500 2026-10-11 00:24:33,269 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+46500 2026-10-11 00:24:33,269 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+46500 2026-10-11 00:24:33,269 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1791649393925 status:PENDING
+46500 2026-10-11 00:24:33,441 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+46500 2026-10-11 00:24:33,441 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+46500 2026-10-11 00:24:33,441 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+46500 2026-10-11 00:24:33,442 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+46500 2026-10-11 00:24:33,442 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+8036 2026-10-11 00:25:17,110 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+8036 2026-10-11 00:25:17,111 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+8036 2026-10-11 00:25:17,112 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+8036 2026-10-11 00:25:17,112 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+8036 2026-10-11 00:25:17,112 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+8036 2026-10-11 00:25:17,112 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+8036 2026-10-11 00:25:17,282 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+8036 2026-10-11 00:25:17,284 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+8036 2026-10-11 00:25:17,284 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+8036 2026-10-11 00:25:17,284 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+8036 2026-10-11 00:25:17,284 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+37128 2026-10-11 00:29:09,422 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+37128 2026-10-11 00:29:09,423 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+37128 2026-10-11 00:29:09,424 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+37128 2026-10-11 00:29:09,424 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+37128 2026-10-11 00:29:09,424 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+37128 2026-10-11 00:29:09,424 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+37128 2026-10-11 00:29:09,681 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+37128 2026-10-11 00:29:09,682 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+37128 2026-10-11 00:29:09,683 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+37128 2026-10-11 00:29:09,683 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+37128 2026-10-11 00:29:09,683 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+16604 2026-10-11 00:31:50,909 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+16604 2026-10-11 00:31:50,911 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+16604 2026-10-11 00:31:50,912 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+16604 2026-10-11 00:31:50,912 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+16604 2026-10-11 00:31:50,912 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+16604 2026-10-11 00:31:50,912 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+16604 2026-10-11 00:31:51,164 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+16604 2026-10-11 00:31:51,165 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+16604 2026-10-11 00:31:51,165 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+16604 2026-10-11 00:31:51,165 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+16604 2026-10-11 00:31:51,165 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+16604 2026-10-11 00:31:51,709 webull.core.client ERROR ServerException occurred. Host:api.webull.hk SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/market-data/stocks/bars/list",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "POST",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.39f01252787f69d600056518efbda247",
+    "x-timestamp": "2026-10-10T16:31:51Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "0f9be4f2-73f2-5c04-a485-8b118a80eb2f",
+    "x-signature": "t60qm+bYCrODirM4EaUUBOrXKI1ndt1gnHjzjeGM1XA=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-access-token": "9b4cdcf70f274a37882ddbe92745b5f0",
+    "x-webull-client-source": "sdk",
+    "Content-Length": "97",
+    "Content-Type": "application/json"
+  },
+  "_body_params": {
+    "symbols": [
+      "NVDA"
+    ],
+    "category": "US_STOCK",
+    "timespan": "M1",
+    "count": "30",
+    "real_time_required": true
+  },
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": "{\"symbols\":[\"NVDA\"],\"category\":\"US_STOCK\",\"timespan\":\"M1\",\"count\":\"30\",\"real_time_required\":true}",
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.hk",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'MARKET_DATA_NOT_SUBSCRIBED', 'message': 'Insufficient permission, please subscribe to STOCK QUOTES.', 'status': 403} ServerException:HTTP Status: 403, Code: MARKET_DATA_NOT_SUBSCRIBED, Msg: Insufficient permission, please subscribe to STOCK QUOTES., RequestID: 873dd032-3707-48fa-b865-62e05f8ee817
+16604 2026-10-11 00:31:51,709 webull.core.client ERROR get_response exception. {
+  "error_code": "MARKET_DATA_NOT_SUBSCRIBED",
+  "error_msg": "Insufficient permission, please subscribe to STOCK QUOTES.",
+  "http_status": 403,
+  "request_id": "873dd032-3707-48fa-b865-62e05f8ee817"
+}
+54340 2026-10-11 00:32:18,677 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+54340 2026-10-11 00:32:18,678 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+54340 2026-10-11 00:32:18,678 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+54340 2026-10-11 00:32:18,678 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+54340 2026-10-11 00:32:18,678 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+54340 2026-10-11 00:32:18,678 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+54340 2026-10-11 00:32:18,878 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+54340 2026-10-11 00:32:18,879 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+54340 2026-10-11 00:32:18,879 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+54340 2026-10-11 00:32:18,880 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+54340 2026-10-11 00:32:18,880 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+54340 2026-10-11 00:32:19,586 webull.core.client ERROR ServerException occurred. Host:api.webull.hk SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/market-data/stocks/bars/list",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "POST",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.39f01252787f69d600056518efbda247",
+    "x-timestamp": "2026-10-10T16:32:19Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "57c51e38-5deb-56a0-b67c-d68d14788065",
+    "x-signature": "9fOKKZ6OzTmIJSG+oJjawwT5NDZXYK2zvEr+07AD5gk=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-access-token": "9b4cdcf70f274a37882ddbe92745b5f0",
+    "x-webull-client-source": "sdk",
+    "Content-Length": "70",
+    "Content-Type": "application/json"
+  },
+  "_body_params": {
+    "symbols": [
+      "NVDA"
+    ],
+    "category": "US_STOCK",
+    "timespan": "M1",
+    "count": "3"
+  },
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": "{\"symbols\":[\"NVDA\"],\"category\":\"US_STOCK\",\"timespan\":\"M1\",\"count\":\"3\"}",
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.hk",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'MARKET_DATA_NOT_SUBSCRIBED', 'message': 'Insufficient permission, please subscribe to STOCK QUOTES.', 'status': 403} ServerException:HTTP Status: 403, Code: MARKET_DATA_NOT_SUBSCRIBED, Msg: Insufficient permission, please subscribe to STOCK QUOTES., RequestID: 1f39f11e-4ea5-4f15-83a0-4d71389b64d5
+54340 2026-10-11 00:32:19,586 webull.core.client ERROR get_response exception. {
+  "error_code": "MARKET_DATA_NOT_SUBSCRIBED",
+  "error_msg": "Insufficient permission, please subscribe to STOCK QUOTES.",
+  "http_status": 403,
+  "request_id": "1f39f11e-4ea5-4f15-83a0-4d71389b64d5"
+}
+54340 2026-10-11 00:32:19,772 webull.core.client ERROR ServerException occurred. Host:api.webull.hk SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/market-data/stocks/bars/list",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "POST",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.39f01252787f69d600056518efbda247",
+    "x-timestamp": "2026-10-10T16:32:19Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "c44e6b47-740e-59d6-bf4c-6b74cce9091a",
+    "x-signature": "ZNWLfK+9f5zgPChMjKXhdi/2LNlr/kTpiB1qgqtItso=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-access-token": "9b4cdcf70f274a37882ddbe92745b5f0",
+    "x-webull-client-source": "sdk",
+    "Content-Length": "96",
+    "Content-Type": "application/json"
+  },
+  "_body_params": {
+    "symbols": [
+      "NVDA"
+    ],
+    "category": "US_STOCK",
+    "timespan": "M1",
+    "count": "3",
+    "real_time_required": true
+  },
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": "{\"symbols\":[\"NVDA\"],\"category\":\"US_STOCK\",\"timespan\":\"M1\",\"count\":\"3\",\"real_time_required\":true}",
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.hk",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'MARKET_DATA_NOT_SUBSCRIBED', 'message': 'Insufficient permission, please subscribe to STOCK QUOTES.', 'status': 403} ServerException:HTTP Status: 403, Code: MARKET_DATA_NOT_SUBSCRIBED, Msg: Insufficient permission, please subscribe to STOCK QUOTES., RequestID: 1ce1fe7e-e345-483d-b89d-7c73c9232b32
+54340 2026-10-11 00:32:19,772 webull.core.client ERROR get_response exception. {
+  "error_code": "MARKET_DATA_NOT_SUBSCRIBED",
+  "error_msg": "Insufficient permission, please subscribe to STOCK QUOTES.",
+  "http_status": 403,
+  "request_id": "1ce1fe7e-e345-483d-b89d-7c73c9232b32"
+}
+35532 2026-10-11 00:32:25,545 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+35532 2026-10-11 00:32:25,545 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+35532 2026-10-11 00:32:25,546 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+35532 2026-10-11 00:32:25,546 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+35532 2026-10-11 00:32:25,546 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+35532 2026-10-11 00:32:25,546 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+35532 2026-10-11 00:32:25,723 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+35532 2026-10-11 00:32:25,724 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+35532 2026-10-11 00:32:25,724 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+35532 2026-10-11 00:32:25,724 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+35532 2026-10-11 00:32:25,724 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+35532 2026-10-11 00:32:26,257 webull.core.client ERROR ServerException occurred. Host:api.webull.hk SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/market-data/stocks/bars/list",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "POST",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.39f01252787f69d600056518efbda247",
+    "x-timestamp": "2026-10-10T16:32:26Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "1a9ea0cb-d523-512a-b53e-c2affbf80c94",
+    "x-signature": "58dynSBge+7G7bhvGgSRVMI9ZSlnoh9LYfDJTl3b6zE=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-access-token": "9b4cdcf70f274a37882ddbe92745b5f0",
+    "x-webull-client-source": "sdk",
+    "Content-Length": "70",
+    "Content-Type": "application/json"
+  },
+  "_body_params": {
+    "symbols": [
+      "NVDA"
+    ],
+    "category": "US_STOCK",
+    "timespan": "M1",
+    "count": "3"
+  },
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": "{\"symbols\":[\"NVDA\"],\"category\":\"US_STOCK\",\"timespan\":\"M1\",\"count\":\"3\"}",
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.hk",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'MARKET_DATA_NOT_SUBSCRIBED', 'message': 'Insufficient permission, please subscribe to STOCK QUOTES.', 'status': 403} ServerException:HTTP Status: 403, Code: MARKET_DATA_NOT_SUBSCRIBED, Msg: Insufficient permission, please subscribe to STOCK QUOTES., RequestID: 3deac4c8-923b-481e-a3cc-8257b67f9c82
+35532 2026-10-11 00:32:26,257 webull.core.client ERROR get_response exception. {
+  "error_code": "MARKET_DATA_NOT_SUBSCRIBED",
+  "error_msg": "Insufficient permission, please subscribe to STOCK QUOTES.",
+  "http_status": 403,
+  "request_id": "3deac4c8-923b-481e-a3cc-8257b67f9c82"
+}
+35532 2026-10-11 00:32:26,480 webull.core.client ERROR ServerException occurred. Host:api.webull.hk SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/market-data/stocks/bars/list",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "POST",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.39f01252787f69d600056518efbda247",
+    "x-timestamp": "2026-10-10T16:32:26Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "dfd69f1c-e267-5ab5-a470-4141e13bed3a",
+    "x-signature": "btdqllRSVMYyf10pULRKzsxavICJfvfvtiCS6374rOM=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-access-token": "9b4cdcf70f274a37882ddbe92745b5f0",
+    "x-webull-client-source": "sdk",
+    "Content-Length": "96",
+    "Content-Type": "application/json"
+  },
+  "_body_params": {
+    "symbols": [
+      "NVDA"
+    ],
+    "category": "US_STOCK",
+    "timespan": "M1",
+    "count": "3",
+    "real_time_required": true
+  },
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": "{\"symbols\":[\"NVDA\"],\"category\":\"US_STOCK\",\"timespan\":\"M1\",\"count\":\"3\",\"real_time_required\":true}",
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.hk",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'MARKET_DATA_NOT_SUBSCRIBED', 'message': 'Insufficient permission, please subscribe to STOCK QUOTES.', 'status': 403} ServerException:HTTP Status: 403, Code: MARKET_DATA_NOT_SUBSCRIBED, Msg: Insufficient permission, please subscribe to STOCK QUOTES., RequestID: 3abf96a6-0139-4b10-85d9-c942f5aa22bb
+35532 2026-10-11 00:32:26,480 webull.core.client ERROR get_response exception. {
+  "error_code": "MARKET_DATA_NOT_SUBSCRIBED",
+  "error_msg": "Insufficient permission, please subscribe to STOCK QUOTES.",
+  "http_status": 403,
+  "request_id": "3abf96a6-0139-4b10-85d9-c942f5aa22bb"
+}
+29156 2026-10-11 00:32:53,804 webull.core.client ERROR ServerException occurred. Host:api.webull.com SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/openapi/config",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "GET",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.39f01252787f69d600056518efbda247",
+    "x-timestamp": "2026-10-10T16:32:53Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "1e8af0b4-48d4-5724-9246-f98650f0beab",
+    "x-signature": "4Spi68N7dMiRYRXWqoXj3RkPw5lFUdc3NUtUrlsz+n4=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-webull-client-source": "sdk"
+  },
+  "_body_params": null,
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": null,
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.com",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'UNAUTHORIZED', 'message': 'Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment'} ServerException:HTTP Status: 401, Code: UNAUTHORIZED, Msg: Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment, RequestID: c46d0325-08ba-4e97-bc36-0f7e1632c5b1
+29156 2026-10-11 00:32:53,805 webull.core.client ERROR get_response exception. {
+  "error_code": "UNAUTHORIZED",
+  "error_msg": "Invalid credentials. Please verify your credentials and ensure you are connecting to the correct environment",
+  "http_status": 401,
+  "request_id": "c46d0325-08ba-4e97-bc36-0f7e1632c5b1"
+}
+29156 2026-10-11 00:32:54,004 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+29156 2026-10-11 00:32:54,004 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+29156 2026-10-11 00:32:54,005 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token_hk_probe.
+29156 2026-10-11 00:32:54,005 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token_hk_probe.
+29156 2026-10-11 00:32:54,006 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token_hk_probe\token.txt.
+29156 2026-10-11 00:32:54,006 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token_hk_probe\token.txt.
+29156 2026-10-11 00:32:54,006 webull.core.http.initializer.token.token_manager INFO load_token_from_local file not exists, file:D:\coding\brokery\brokery\data\webull_token_hk_probe\token.txt.
+29156 2026-10-11 00:32:54,006 webull.core.http.initializer.token.token_manager INFO load_token_from_local file not exists, file:D:\coding\brokery\brokery\data\webull_token_hk_probe\token.txt.
+29156 2026-10-11 00:32:54,522 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:96a812******9f1db1 expires:1791650334444 status:PENDING
+29156 2026-10-11 00:32:54,522 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:96a812******9f1db1 expires:1791650334444 status:PENDING
+29156 2026-10-11 00:32:54,522 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server started check_token loop. token:96a812******9f1db1 duration_seconds:20 interval_seconds:5
+29156 2026-10-11 00:32:54,522 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server started check_token loop. token:96a812******9f1db1 duration_seconds:20 interval_seconds:5
+29156 2026-10-11 00:32:54,728 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:96a812******9f1db1 expires:1791650334444 status:PENDING
+29156 2026-10-11 00:32:54,728 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:96a812******9f1db1 expires:1791650334444 status:PENDING
+29156 2026-10-11 00:32:54,728 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 0s / 20s). For more details, please visit the OpenAPI official website.
+29156 2026-10-11 00:32:54,728 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 0s / 20s). For more details, please visit the OpenAPI official website.
+29156 2026-10-11 00:32:59,689 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:96a812******9f1db1 expires:1791650334444 status:PENDING
+29156 2026-10-11 00:32:59,689 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:96a812******9f1db1 expires:1791650334444 status:PENDING
+29156 2026-10-11 00:32:59,689 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 5s / 20s). For more details, please visit the OpenAPI official website.
+29156 2026-10-11 00:32:59,689 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 5s / 20s). For more details, please visit the OpenAPI official website.
+29156 2026-10-11 00:33:04,704 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:96a812******9f1db1 expires:1791650334444 status:PENDING
+29156 2026-10-11 00:33:04,704 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:96a812******9f1db1 expires:1791650334444 status:PENDING
+29156 2026-10-11 00:33:04,704 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 10s / 20s). For more details, please visit the OpenAPI official website.
+29156 2026-10-11 00:33:04,704 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 10s / 20s). For more details, please visit the OpenAPI official website.
+29156 2026-10-11 00:33:09,686 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:96a812******9f1db1 expires:1791650334444 status:PENDING
+29156 2026-10-11 00:33:09,686 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:96a812******9f1db1 expires:1791650334444 status:PENDING
+29156 2026-10-11 00:33:09,687 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 15s / 20s). For more details, please visit the OpenAPI official website.
+29156 2026-10-11 00:33:09,687 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server status not verified, check_token loop will start, waiting 5 seconds... (elapsed 15s / 20s). For more details, please visit the OpenAPI official website.
+29156 2026-10-11 00:33:14,697 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:96a812******9f1db1 expires:1791650334444 status:PENDING
+29156 2026-10-11 00:33:14,697 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server result of current check_token loop. token:96a812******9f1db1 expires:1791650334444 status:PENDING
+29156 2026-10-11 00:33:14,697 webull.core.http.initializer.token.token_manager WARNING fetch_token_from_server check_token loop completed. reached the maximum retries without passing validation, returning create_access_token. For more details, please visit the OpenAPI official website.
+29156 2026-10-11 00:33:14,697 webull.core.http.initializer.token.token_manager WARNING fetch_token_from_server check_token loop completed. reached the maximum retries without passing validation, returning create_access_token. For more details, please visit the OpenAPI official website.
+29156 2026-10-11 00:33:14,698 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:96a812******9f1db1 expires:1791650334444 status:PENDING
+29156 2026-10-11 00:33:14,698 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:96a812******9f1db1 expires:1791650334444 status:PENDING
+29156 2026-10-11 00:33:14,698 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+29156 2026-10-11 00:33:14,698 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+29156 2026-10-11 00:33:14,698 webull.core.http.initializer.token.token_manager ERROR init_token status not verified error. token:96a812******9f1db1 expires:1791650334444 status:PENDING
+29156 2026-10-11 00:33:14,698 webull.core.http.initializer.token.token_manager ERROR init_token status not verified error. token:96a812******9f1db1 expires:1791650334444 status:PENDING
+29668 2026-10-11 00:38:08,259 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+29668 2026-10-11 00:38:08,259 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+29668 2026-10-11 00:38:08,259 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+29668 2026-10-11 00:38:08,259 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+29668 2026-10-11 00:38:08,259 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+29668 2026-10-11 00:38:08,260 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+29668 2026-10-11 00:38:08,447 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+29668 2026-10-11 00:38:08,447 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+29668 2026-10-11 00:38:08,447 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+29668 2026-10-11 00:38:08,448 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+29668 2026-10-11 00:38:08,448 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+29668 2026-10-11 00:38:08,642 webull.core.client ERROR ServerException occurred. Host:api.webull.hk SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/market-data/stocks/bars/list",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "POST",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.39f01252787f69d600056518efbda247",
+    "x-timestamp": "2026-10-10T16:38:08Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "ee8b1ff1-0b8f-518c-ab00-34ef9f9f4ce7",
+    "x-signature": "EdPRX9MF0N+nyD0H0MsxA1k0ix/vYnwlEjZ7Bg86KAY=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-access-token": "9b4cdcf70f274a37882ddbe92745b5f0",
+    "x-webull-client-source": "sdk",
+    "Content-Length": "70",
+    "Content-Type": "application/json"
+  },
+  "_body_params": {
+    "symbols": [
+      "NVDA"
+    ],
+    "category": "US_STOCK",
+    "timespan": "M1",
+    "count": "3"
+  },
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": "{\"symbols\":[\"NVDA\"],\"category\":\"US_STOCK\",\"timespan\":\"M1\",\"count\":\"3\"}",
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.hk",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'MARKET_DATA_NOT_SUBSCRIBED', 'message': 'Insufficient permission, please subscribe to STOCK QUOTES.', 'status': 403} ServerException:HTTP Status: 403, Code: MARKET_DATA_NOT_SUBSCRIBED, Msg: Insufficient permission, please subscribe to STOCK QUOTES., RequestID: ab05ce58-eb9a-4cab-8bfa-e74b6f4cb93b
+29668 2026-10-11 00:38:08,642 webull.core.client ERROR get_response exception. {
+  "error_code": "MARKET_DATA_NOT_SUBSCRIBED",
+  "error_msg": "Insufficient permission, please subscribe to STOCK QUOTES.",
+  "http_status": 403,
+  "request_id": "ab05ce58-eb9a-4cab-8bfa-e74b6f4cb93b"
+}
+16364 2026-10-11 00:38:23,451 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+16364 2026-10-11 00:38:23,452 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+16364 2026-10-11 00:38:23,453 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+16364 2026-10-11 00:38:23,453 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+16364 2026-10-11 00:38:23,453 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+16364 2026-10-11 00:38:23,453 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+16364 2026-10-11 00:38:23,699 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+16364 2026-10-11 00:38:23,700 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+16364 2026-10-11 00:38:23,700 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+16364 2026-10-11 00:38:23,701 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+16364 2026-10-11 00:38:23,701 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+1844 2026-10-11 00:40:50,181 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+1844 2026-10-11 00:40:50,182 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+1844 2026-10-11 00:40:50,182 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+1844 2026-10-11 00:40:50,182 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+1844 2026-10-11 00:40:50,183 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+1844 2026-10-11 00:40:50,183 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+1844 2026-10-11 00:40:50,355 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+1844 2026-10-11 00:40:50,355 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+1844 2026-10-11 00:40:50,356 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+1844 2026-10-11 00:40:50,356 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+1844 2026-10-11 00:40:50,356 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+41416 2026-10-11 00:45:11,922 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+41416 2026-10-11 00:45:11,924 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+41416 2026-10-11 00:45:11,924 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+41416 2026-10-11 00:45:11,924 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+41416 2026-10-11 00:45:11,924 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+41416 2026-10-11 00:45:11,924 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+41416 2026-10-11 00:45:12,130 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+41416 2026-10-11 00:45:12,131 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+41416 2026-10-11 00:45:12,131 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+41416 2026-10-11 00:45:12,131 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+41416 2026-10-11 00:45:12,131 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+56020 2026-10-11 01:26:39,896 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+56020 2026-10-11 01:26:39,897 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+56020 2026-10-11 01:26:39,897 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+56020 2026-10-11 01:26:39,897 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+56020 2026-10-11 01:26:39,898 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+56020 2026-10-11 01:26:39,905 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+56020 2026-10-11 01:26:40,078 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+56020 2026-10-11 01:26:40,079 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+56020 2026-10-11 01:26:40,079 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+56020 2026-10-11 01:26:40,079 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+56020 2026-10-11 01:26:40,079 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+39704 2026-10-11 01:29:59,314 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+39704 2026-10-11 01:29:59,315 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+39704 2026-10-11 01:29:59,315 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+39704 2026-10-11 01:29:59,315 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+39704 2026-10-11 01:29:59,325 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+39704 2026-10-11 01:29:59,325 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+39704 2026-10-11 01:29:59,512 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+39704 2026-10-11 01:29:59,513 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+39704 2026-10-11 01:29:59,513 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+39704 2026-10-11 01:29:59,513 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+39704 2026-10-11 01:29:59,513 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+2880 2026-10-11 01:34:49,689 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+2880 2026-10-11 01:34:49,699 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+2880 2026-10-11 01:34:49,699 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+2880 2026-10-11 01:34:49,699 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+2880 2026-10-11 01:34:49,699 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+2880 2026-10-11 01:34:49,700 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+2880 2026-10-11 01:34:49,887 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+2880 2026-10-11 01:34:49,888 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+2880 2026-10-11 01:34:49,888 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+2880 2026-10-11 01:34:49,888 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+2880 2026-10-11 01:34:49,888 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+10912 2026-10-11 01:45:15,126 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+10912 2026-10-11 01:45:15,128 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+10912 2026-10-11 01:45:15,128 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+10912 2026-10-11 01:45:15,128 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+10912 2026-10-11 01:45:15,129 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+10912 2026-10-11 01:45:15,129 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+10912 2026-10-11 01:45:15,391 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+10912 2026-10-11 01:45:15,393 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+10912 2026-10-11 01:45:15,393 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+10912 2026-10-11 01:45:15,393 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+10912 2026-10-11 01:45:15,394 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+54088 2026-10-11 01:46:19,840 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+54088 2026-10-11 01:46:19,841 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+54088 2026-10-11 01:46:19,841 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+54088 2026-10-11 01:46:19,841 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+54088 2026-10-11 01:46:19,841 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+54088 2026-10-11 01:46:19,842 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+54088 2026-10-11 01:46:20,160 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+54088 2026-10-11 01:46:20,161 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+54088 2026-10-11 01:46:20,161 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+54088 2026-10-11 01:46:20,162 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+54088 2026-10-11 01:46:20,162 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+4208 2026-10-11 01:46:25,757 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+4208 2026-10-11 01:46:25,758 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+4208 2026-10-11 01:46:25,758 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+4208 2026-10-11 01:46:25,758 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+4208 2026-10-11 01:46:25,758 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+4208 2026-10-11 01:46:25,759 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+4208 2026-10-11 01:46:25,981 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+4208 2026-10-11 01:46:25,982 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+4208 2026-10-11 01:46:25,982 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+4208 2026-10-11 01:46:25,983 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+4208 2026-10-11 01:46:25,983 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+51168 2026-10-11 01:48:29,650 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+51168 2026-10-11 01:48:29,651 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+51168 2026-10-11 01:48:29,652 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+51168 2026-10-11 01:48:29,652 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+51168 2026-10-11 01:48:29,652 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+51168 2026-10-11 01:48:29,652 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+51168 2026-10-11 01:48:29,817 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+51168 2026-10-11 01:48:29,818 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+51168 2026-10-11 01:48:29,818 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+51168 2026-10-11 01:48:29,819 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+51168 2026-10-11 01:48:29,819 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+52588 2026-10-11 01:49:42,323 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+52588 2026-10-11 01:49:42,324 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+52588 2026-10-11 01:49:42,324 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+52588 2026-10-11 01:49:42,324 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+52588 2026-10-11 01:49:42,324 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+52588 2026-10-11 01:49:42,324 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+52588 2026-10-11 01:49:42,501 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+52588 2026-10-11 01:49:42,501 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+52588 2026-10-11 01:49:42,501 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+52588 2026-10-11 01:49:42,502 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+52588 2026-10-11 01:49:42,502 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+18840 2026-10-11 01:51:27,859 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+18840 2026-10-11 01:51:27,860 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+18840 2026-10-11 01:51:27,860 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+18840 2026-10-11 01:51:27,860 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+18840 2026-10-11 01:51:27,860 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+18840 2026-10-11 01:51:27,860 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+18840 2026-10-11 01:51:28,027 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+18840 2026-10-11 01:51:28,028 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+18840 2026-10-11 01:51:28,028 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+18840 2026-10-11 01:51:28,028 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+18840 2026-10-11 01:51:28,028 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+30212 2026-10-11 01:57:54,222 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+30212 2026-10-11 01:57:54,223 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+30212 2026-10-11 01:57:54,224 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+30212 2026-10-11 01:57:54,224 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+30212 2026-10-11 01:57:54,224 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+30212 2026-10-11 01:57:54,225 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+30212 2026-10-11 01:57:54,486 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+30212 2026-10-11 01:57:54,488 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+30212 2026-10-11 01:57:54,488 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+30212 2026-10-11 01:57:54,489 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+30212 2026-10-11 01:57:54,489 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+30212 2026-10-11 01:57:56,481 webull.core.client ERROR ServerException occurred. Host:api.webull.hk SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/market-data/stocks/bars/list",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "POST",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.39f01252787f69d600056518efbda247",
+    "x-timestamp": "2026-10-10T17:57:56Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "52271647-0e8b-5aa0-ae12-e5cd293a1968",
+    "x-signature": "82ZxDnsUx+tOVcGQVc4UwiMH6fHJi7lHmqc4wXziPtM=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-access-token": "9b4cdcf70f274a37882ddbe92745b5f0",
+    "x-webull-client-source": "sdk",
+    "Content-Length": "70",
+    "Content-Type": "application/json"
+  },
+  "_body_params": {
+    "symbols": [
+      "NVDA"
+    ],
+    "category": "US_STOCK",
+    "timespan": "D",
+    "count": "10"
+  },
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": "{\"symbols\":[\"NVDA\"],\"category\":\"US_STOCK\",\"timespan\":\"D\",\"count\":\"10\"}",
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.hk",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'MARKET_DATA_NOT_SUBSCRIBED', 'message': 'Insufficient permission, please subscribe to STOCK QUOTES.', 'status': 403} ServerException:HTTP Status: 403, Code: MARKET_DATA_NOT_SUBSCRIBED, Msg: Insufficient permission, please subscribe to STOCK QUOTES., RequestID: f0d9b978-768b-4d91-838d-45f4ff31cf48
+30212 2026-10-11 01:57:56,481 webull.core.client ERROR get_response exception. {
+  "error_code": "MARKET_DATA_NOT_SUBSCRIBED",
+  "error_msg": "Insufficient permission, please subscribe to STOCK QUOTES.",
+  "http_status": 403,
+  "request_id": "f0d9b978-768b-4d91-838d-45f4ff31cf48"
+}
+30212 2026-10-11 01:57:57,262 webull.core.client ERROR ServerException occurred. Host:api.webull.hk SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/market-data/stocks/bars/list",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "POST",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.39f01252787f69d600056518efbda247",
+    "x-timestamp": "2026-10-10T17:57:57Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "3c9a1fb5-8bf0-5d13-b160-47bc03347595",
+    "x-signature": "t1O2hUg23O9tbJ987gKgetT1GgWrFvuU/5RB7XIlBrg=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-access-token": "9b4cdcf70f274a37882ddbe92745b5f0",
+    "x-webull-client-source": "sdk",
+    "Content-Length": "73",
+    "Content-Type": "application/json"
+  },
+  "_body_params": {
+    "symbols": [
+      "A50main"
+    ],
+    "category": "HK_STOCK",
+    "timespan": "D",
+    "count": "10"
+  },
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": "{\"symbols\":[\"A50main\"],\"category\":\"HK_STOCK\",\"timespan\":\"D\",\"count\":\"10\"}",
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.hk",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'INVALID_SYMBOL', 'message': 'The symbols does not exist in the category. [A50main].', 'status': 417} ServerException:HTTP Status: 417, Code: INVALID_SYMBOL, Msg: The symbols does not exist in the category. [A50main]., RequestID: e9e56a09-0082-47ce-b847-dcb2f6e33a9f
+30212 2026-10-11 01:57:57,262 webull.core.client ERROR get_response exception. {
+  "error_code": "INVALID_SYMBOL",
+  "error_msg": "The symbols does not exist in the category. [A50main].",
+  "http_status": 417,
+  "request_id": "e9e56a09-0082-47ce-b847-dcb2f6e33a9f"
+}
+30212 2026-10-11 01:58:00,195 webull.core.client ERROR ServerException occurred. Host:api.webull.hk SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/market-data/stocks/bars/list",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "POST",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.39f01252787f69d600056518efbda247",
+    "x-timestamp": "2026-10-10T17:57:59Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "7f26ed51-f307-5a1a-b0db-cafcdc88b91a",
+    "x-signature": "NJ8W5XD6Dq98T/ZDT61eeU3Dn1kXTt5fvXH8szdTNjs=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-access-token": "9b4cdcf70f274a37882ddbe92745b5f0",
+    "x-webull-client-source": "sdk",
+    "Content-Length": "73",
+    "Content-Type": "application/json"
+  },
+  "_body_params": {
+    "symbols": [
+      "10Ymain"
+    ],
+    "category": "US_STOCK",
+    "timespan": "D",
+    "count": "10"
+  },
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": "{\"symbols\":[\"10Ymain\"],\"category\":\"US_STOCK\",\"timespan\":\"D\",\"count\":\"10\"}",
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.hk",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'INVALID_SYMBOL', 'message': 'The symbols does not exist in the category. [10Ymain].', 'status': 417} ServerException:HTTP Status: 417, Code: INVALID_SYMBOL, Msg: The symbols does not exist in the category. [10Ymain]., RequestID: a9c7e3b2-f466-4706-9bb2-2c1576a3ad96
+30212 2026-10-11 01:58:00,195 webull.core.client ERROR get_response exception. {
+  "error_code": "INVALID_SYMBOL",
+  "error_msg": "The symbols does not exist in the category. [10Ymain].",
+  "http_status": 417,
+  "request_id": "a9c7e3b2-f466-4706-9bb2-2c1576a3ad96"
+}
+30212 2026-10-11 01:58:03,071 webull.core.client ERROR ServerException occurred. Host:api.webull.hk SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/market-data/stocks/bars/list",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "POST",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.39f01252787f69d600056518efbda247",
+    "x-timestamp": "2026-10-10T17:58:02Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "18d3155a-c52f-5b8c-a645-d987343ecd2e",
+    "x-signature": "0e5fqlCU37mdegcUWILDr2cZwa4iQCOjQYNbdgvggkQ=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-access-token": "9b4cdcf70f274a37882ddbe92745b5f0",
+    "x-webull-client-source": "sdk",
+    "Content-Length": "72",
+    "Content-Type": "application/json"
+  },
+  "_body_params": {
+    "symbols": [
+      "800000"
+    ],
+    "category": "HK_STOCK",
+    "timespan": "D",
+    "count": "10"
+  },
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": "{\"symbols\":[\"800000\"],\"category\":\"HK_STOCK\",\"timespan\":\"D\",\"count\":\"10\"}",
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.hk",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'INVALID_SYMBOL', 'message': 'The symbols does not exist in the category. [800000].', 'status': 417} ServerException:HTTP Status: 417, Code: INVALID_SYMBOL, Msg: The symbols does not exist in the category. [800000]., RequestID: 860eef12-2c91-40a6-aa58-db78a3611cbb
+30212 2026-10-11 01:58:03,072 webull.core.client ERROR get_response exception. {
+  "error_code": "INVALID_SYMBOL",
+  "error_msg": "The symbols does not exist in the category. [800000].",
+  "http_status": 417,
+  "request_id": "860eef12-2c91-40a6-aa58-db78a3611cbb"
+}
+30212 2026-10-11 01:58:05,314 webull.core.client ERROR ServerException occurred. Host:api.webull.hk SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/market-data/stocks/bars/list",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "POST",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.39f01252787f69d600056518efbda247",
+    "x-timestamp": "2026-10-10T17:58:05Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "9b49e3b2-1a62-526b-b6c1-c3dc5cb45596",
+    "x-signature": "4EGJCgQhPn/nU5eQ3u4pUtUFZX95F0kPW7Cr0PqG/bE=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-access-token": "9b4cdcf70f274a37882ddbe92745b5f0",
+    "x-webull-client-source": "sdk",
+    "Content-Length": "70",
+    "Content-Type": "application/json"
+  },
+  "_body_params": {
+    "symbols": [
+      ".SPX"
+    ],
+    "category": "US_STOCK",
+    "timespan": "D",
+    "count": "10"
+  },
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": "{\"symbols\":[\".SPX\"],\"category\":\"US_STOCK\",\"timespan\":\"D\",\"count\":\"10\"}",
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.hk",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'INVALID_SYMBOL', 'message': 'The symbols does not exist in the category. [.SPX].', 'status': 417} ServerException:HTTP Status: 417, Code: INVALID_SYMBOL, Msg: The symbols does not exist in the category. [.SPX]., RequestID: 14db6110-c698-44d7-80b3-74a5240eae52
+30212 2026-10-11 01:58:05,315 webull.core.client ERROR get_response exception. {
+  "error_code": "INVALID_SYMBOL",
+  "error_msg": "The symbols does not exist in the category. [.SPX].",
+  "http_status": 417,
+  "request_id": "14db6110-c698-44d7-80b3-74a5240eae52"
+}
+2856 2026-10-11 02:02:51,377 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+2856 2026-10-11 02:02:51,377 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+2856 2026-10-11 02:02:51,378 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+2856 2026-10-11 02:02:51,378 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+2856 2026-10-11 02:02:51,378 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+2856 2026-10-11 02:02:51,379 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+2856 2026-10-11 02:02:51,552 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+2856 2026-10-11 02:02:51,553 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+2856 2026-10-11 02:02:51,553 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+2856 2026-10-11 02:02:51,554 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+2856 2026-10-11 02:02:51,554 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+2856 2026-10-11 02:02:51,720 webull.core.client ERROR ServerException occurred. Host:api.webull.hk SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/market-data/stocks/bars/list",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "POST",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.39f01252787f69d600056518efbda247",
+    "x-timestamp": "2026-10-10T18:02:51Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "6a055ff2-29a7-5690-8ecf-f673d02a5ca7",
+    "x-signature": "bDQEXSfEbLHiL4DdpOC/uE1M+ZLqyndMwmY48wguGvo=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-access-token": "9b4cdcf70f274a37882ddbe92745b5f0",
+    "x-webull-client-source": "sdk",
+    "Content-Length": "82",
+    "Content-Type": "application/json"
+  },
+  "_body_params": {
+    "symbols": [
+      "TCH261127C205000"
+    ],
+    "category": "HK_STOCK",
+    "timespan": "D",
+    "count": "10"
+  },
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": "{\"symbols\":[\"TCH261127C205000\"],\"category\":\"HK_STOCK\",\"timespan\":\"D\",\"count\":\"10\"}",
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.hk",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'INVALID_SYMBOL', 'message': 'The symbols does not exist in the category. [TCH261127C205000].', 'status': 417} ServerException:HTTP Status: 417, Code: INVALID_SYMBOL, Msg: The symbols does not exist in the category. [TCH261127C205000]., RequestID: 226dd488-6eb7-4a7c-9c10-3312f5ade1c9
+2856 2026-10-11 02:02:51,720 webull.core.client ERROR get_response exception. {
+  "error_code": "INVALID_SYMBOL",
+  "error_msg": "The symbols does not exist in the category. [TCH261127C205000].",
+  "http_status": 417,
+  "request_id": "226dd488-6eb7-4a7c-9c10-3312f5ade1c9"
+}
+2856 2026-10-11 02:02:59,247 webull.core.client ERROR ServerException occurred. Host:api.webull.hk SDK-Version:3.0.3 Request:{
+  "_version": "v3",
+  "_action_name": "/market-data/stocks/bars/list",
+  "_protocol_type": "https",
+  "_accept_format": "JSON",
+  "_params": {},
+  "_method": "POST",
+  "_header": {
+    "x-version": "v3",
+    "Accept-Encoding": "gzip",
+    "x-app-key": "hk.39f01252787f69d600056518efbda247",
+    "x-timestamp": "2026-10-10T18:02:59Z",
+    "x-signature-version": "1.0",
+    "x-signature-algorithm": "HMAC-SHA256",
+    "x-signature-nonce": "3de7ccad-1dbb-5710-9971-23150d700047",
+    "x-signature": "kGdgxx9AZDKbMK1iUOKPVyANcDe1BIXRIWCQga7UuNc=",
+    "User-Agent": "WebullApiSDK (Windows 11;AMD64) Python/3.12.10 Core/3.0.3 python-requests/2.34.2",
+    "x-access-token": "9b4cdcf70f274a37882ddbe92745b5f0",
+    "x-webull-client-source": "sdk",
+    "Content-Length": "83",
+    "Content-Type": "application/json"
+  },
+  "_body_params": {
+    "symbols": [
+      "AAPL261106C110000"
+    ],
+    "category": "US_STOCK",
+    "timespan": "D",
+    "count": "10"
+  },
+  "_uri_pattern": null,
+  "_uri_params": null,
+  "_content": "{\"symbols\":[\"AAPL261106C110000\"],\"category\":\"US_STOCK\",\"timespan\":\"D\",\"count\":\"10\"}",
+  "_extra_user_agent": {},
+  "string_to_sign": "",
+  "_request_connect_timeout": null,
+  "_request_read_timeout": null,
+  "endpoint": "api.webull.hk",
+  "_signer_spec": "<module 'webull.core.auth.algorithm.sha_hmac1' from 'C:\\\\Users\\\\frank\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\Lib\\\\site-packages\\\\webull\\\\core\\\\auth\\\\algorithm\\\\sha_hmac1.py'>"
+} Response:{'error_code': 'INVALID_SYMBOL', 'message': 'The symbols does not exist in the category. [AAPL261106C110000].', 'status': 417} ServerException:HTTP Status: 417, Code: INVALID_SYMBOL, Msg: The symbols does not exist in the category. [AAPL261106C110000]., RequestID: 8ce24586-00d5-4bd8-b643-c050bcf7dede
+2856 2026-10-11 02:02:59,247 webull.core.client ERROR get_response exception. {
+  "error_code": "INVALID_SYMBOL",
+  "error_msg": "The symbols does not exist in the category. [AAPL261106C110000].",
+  "http_status": 417,
+  "request_id": "8ce24586-00d5-4bd8-b643-c050bcf7dede"
+}
+55320 2026-10-11 02:13:50,250 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+55320 2026-10-11 02:13:50,251 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+55320 2026-10-11 02:13:50,252 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+55320 2026-10-11 02:13:50,252 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+55320 2026-10-11 02:13:50,252 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+55320 2026-10-11 02:13:50,253 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+55320 2026-10-11 02:13:50,505 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+55320 2026-10-11 02:13:50,506 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+55320 2026-10-11 02:13:50,506 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+55320 2026-10-11 02:13:50,506 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+55320 2026-10-11 02:13:50,506 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+16740 2026-10-11 02:14:24,458 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+16740 2026-10-11 02:14:24,459 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+16740 2026-10-11 02:14:24,459 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+16740 2026-10-11 02:14:24,459 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+16740 2026-10-11 02:14:24,460 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+16740 2026-10-11 02:14:24,460 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+16740 2026-10-11 02:14:24,642 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+16740 2026-10-11 02:14:24,643 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+16740 2026-10-11 02:14:24,643 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+16740 2026-10-11 02:14:24,644 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+16740 2026-10-11 02:14:24,644 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+50192 2026-10-11 02:17:39,077 webull.core.http.initializer.client_initializer INFO _check_token_enable result is True
+50192 2026-10-11 02:17:39,078 webull.core.http.initializer.token.token_storage INFO storage_token uses the custom configuration, token_dir:D:\coding\brokery\brokery\data\webull_token.
+50192 2026-10-11 02:17:39,079 webull.core.http.initializer.token.token_storage INFO storage_token initialized path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+50192 2026-10-11 02:17:39,079 webull.core.http.initializer.token.token_storage WARNING storage_token Note: The token file already exists, the latest token configuration will be overwritten and written to the token file after successful 2FA verification. path:D:\coding\brokery\brokery\data\webull_token\token.txt.
+50192 2026-10-11 02:17:39,079 webull.core.http.initializer.token.token_manager INFO load_token_from_local reading token from file...
+50192 2026-10-11 02:17:39,079 webull.core.http.initializer.token.token_manager INFO load_token_from_local read local token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+50192 2026-10-11 02:17:39,355 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token result. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+50192 2026-10-11 02:17:39,356 webull.core.http.initializer.token.token_manager INFO fetch_token_from_server create_token status is verified, no further check required, returning directly. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+50192 2026-10-11 02:17:39,356 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to local file. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
+50192 2026-10-11 02:17:39,357 webull.core.http.initializer.token.token_manager INFO save_token_to_local writing token to file completed.
+50192 2026-10-11 02:17:39,357 webull.core.http.initializer.token.token_manager INFO init_token finished. token:9b4cdc******45b5f0 expires:1792945251889 status:NORMAL
