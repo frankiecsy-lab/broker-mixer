@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<!-- 圖表載體頁：桌面 GUI（QWebEngineView）與驗收（Playwright）均載入呢頁，再經 BrokeryChart.render
+     注入資料。頁面本身不含任何文字，亦不取數：資料一律由外層界面餵入。 -->
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>brokery chart</title>
+<script src="echarts.min.js"></script>
+<script src="chart.js"></script>
+<style>
+  html, body { margin:0; height:100%; background:#12161c; color:#dfe6ef;
+               font:12px/1.4 "Segoe UI","Microsoft JhengHei",sans-serif; }
+  #chart { width:100%; height:100%; }
+</style>
+</head>
+<body>
+<div id="chart" _brokery_chart></div>
+<script>
+// 載入完成與否都要讓外層知道：無 ECharts 時界面要顯示明確訊息，而不是留一塊空白。
+window.brokeryChartReady = Boolean(window.echarts && window.BrokeryChart);
+window.brokeryChartMissing = window.brokeryChartReady ? '' : 'ECharts 未能載入';
+</script>
+</body>
+</html>

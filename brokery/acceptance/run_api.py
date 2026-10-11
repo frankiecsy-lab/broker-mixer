@@ -6,11 +6,17 @@ HTTP 200 且原因原樣透傳、三個清單接口的參數透傳（markets 大
 取數本身的對錯由 run_get_kline / run_get_accounts / run_stream_kline 等驗收，本腳本一律以 sources=()
 建立應用，串流部分以存根代替 Brokery，因此不需要任何券商連線，任何環境都能重複執行。
 
+券商開關喜好一段另以兩個存根券商建立應用，並把喜好檔指到臨時目錄：核對的是閘道這一層「啟動讀檔注入、
+寫檔只在 core 成功之後、被停用者不再被任何動作經過」，開關本身的語義由 run_broker_prefs.py 驗收。
+
 以腳本方式直接執行：
     python brokery/acceptance/run_api.py
 """
 import json
+import queue
+import shutil
 import sys
+import tempfile
 import threading
 from pathlib import Path
 
@@ -21,9 +27,12 @@ import pandas as pd
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from brokery import store
-from brokery.brokers.base import ACCOUNT_COLUMNS, BAR_MINUTES, BROKER_COLUMNS, COLUMNS, K_COLUMNS
-from brokery.core import CODES_META_COLUMNS, codes_max_age_seconds
+import brokery.core as core
+from brokery import chart, prefs, store
+from brokery.brokers.base import (ACCOUNT_COLUMNS, BAR_MINUTES, BROKER_COLUMNS, COLUMNS, K_COLUMNS,
+                                  SymbolBroker)
+from brokery.codes import STOCK
+from brokery.core import CODES_META_COLUMNS, PREF_COLUMNS, codes_max_age_seconds
 from brokery_api.app import create_app, frame_payload
 
 KEY = "acceptance-key-9c1f"
@@ -107,14 +116,68 @@ class StubLists:
         pass
 
 
-def until(ws, field: str, prefix: str, limit: int = 6) -> dict:
-    """讀到第一條 field 以 prefix 開始的事件；其間可能夾著上一條串流的收尾事件，故要略過。"""
-    msg: dict = {}
-    for _ in range(limit):
-        msg = ws.receive_json()
-        if str(msg.get(field, "")).startswith(prefix):
-            return msg
-    return msg
+STUB_CALLS: dict[str, list[str]] = {}
+
+
+class StubPrefsBroker(SymbolBroker):
+    """存根券商：讓「生效集合」可離線重複驗證。被停用者不經過它，故一被呼叫即記在 STUB_CALLS。"""
+
+    source = "stubone"
+    capabilities = frozenset({STOCK})
+    kline_symbol_types = (STOCK,)
+    autypes = ("none",)
+    stream_ktypes = ("1m",)
+    stream_autypes = ("none",)
+    acc_types = ("cash",)
+
+    def __init__(self) -> None:
+        STUB_CALLS.setdefault(self.source, [])
+
+    def get_kline(self, code, ktype, count, autype, *, raw=False):
+        STUB_CALLS[self.source].append("get_kline")
+        return [dict(zip(K_COLUMNS, [code, 1_760_000_000, "2026-10-09 09:30:00", 100.0, 101.0,
+                                     99.0, 100.5, 10, 1005.0, self.source]))]
+
+
+class StubPrefsBrokerTwo(StubPrefsBroker):
+    source = "stubtwo"
+
+
+class WsEvents:
+    """按序取用一條 WebSocket 的事件，並為每次等待設上限。
+
+    TestClient 的 receive_json() 沒有超時：事件未到來即永久阻塞，整支腳本看起來像當機。故由一條背景
+    執行緒專讀該連接並收進佇列，取用時以 queue.get(timeout=…) 等待，逾時返回明確的 timeout 事件，讓
+    對應檢查判失敗而不是卡死。背景執行緒只有一條，故事件順序與直接 receive 一致。
+    """
+
+    def __init__(self, ws) -> None:
+        self._queue: queue.Queue = queue.Queue()
+        threading.Thread(target=self._pump, args=(ws,), daemon=True).start()
+
+    def _pump(self, ws) -> None:
+        while True:
+            try:
+                message = ws.receive_json()
+            except Exception as exc:  # 連接已結束：以明確事件收尾，不留一條永久阻塞的執行緒
+                self._queue.put({"event": "closed_by_server", "message": type(exc).__name__})
+                return
+            self._queue.put(message)
+
+    def next(self, timeout: float = 15.0) -> dict:
+        try:
+            return self._queue.get(timeout=timeout)
+        except queue.Empty:
+            return {"event": "timeout", "message": f"{timeout} 秒內沒有更多事件"}
+
+    def until(self, field: str, prefix: str, limit: int = 6) -> dict:
+        """讀到第一條 field 以 prefix 開始的事件；其間可能夾著上一條串流的收尾事件，故要略過。"""
+        message: dict = {}
+        for _ in range(limit):
+            message = self.next()
+            if str(message.get(field, "")).startswith(prefix):
+                return message
+        return message
 
 
 def main() -> dict:
@@ -231,8 +294,10 @@ def main() -> dict:
               set(raw_kline) == {"status", "data", "message"} and raw_kline["status"] is False
               and raw_kline["data"]["columns"] == [], str(raw_kline)[:140])
 
+        # 沒有生效券商時不可報「沒有符合條件的戶口」：根本沒有券商可問，原因必須點名到開關那一層。
         accounts = client.get("/accounts", headers=HEADERS).json()
-        check("無戶口時明確報錯", not accounts["status"] and accounts["message"].startswith("no_account:"),
+        check("無生效券商時明確 no_source（不會誤報無戶口）",
+              not accounts["status"] and accounts["message"].startswith("no_source:"),
               accounts["message"])
         futures = client.get("/futures", params={"roots": "NOPE"}, headers=HEADERS).json()
         check("不存在的期貨 root 明確報錯", not futures["status"] and futures["message"].startswith("unknown_seed:"),
@@ -343,55 +408,173 @@ def main() -> dict:
             check("WS 無金鑰即拒絕連線", exc.code == 4403, f"code={exc.code}")
 
         with client.websocket_connect(f"/stream?api_key={KEY}") as ws:
+            events = WsEvents(ws)
             ws.send_json({"action": "subscribe", "codes": ["HK.00700"], "ktype": "1m", "count": 3, "broker": "futu"})
-            sub = ws.receive_json()
+            sub = events.next()
             check("WS 訂閱回報 subscribed", sub["event"] == "subscribed" and sub["codes"] == ["HK.00700"], str(sub)[:120])
-            fail = until(ws, "message", "unknown_source:")
+            fail = events.until("message", "unknown_source:")
             check("WS 業務失敗以 error 事件原樣透傳", fail.get("event") == "error", str(fail)[:120])
             ws.send_json({"action": "subscribe", "codes": ["HK.00700"], "ktype": "1m", "broker": "futu"})
-            again = ws.receive_json()
+            again = events.next()
             check("失敗後即時歸還該券商名額", again["event"] == "subscribed", str(again)[:120])
             ws.send_json({"action": "subscribe", "codes": ["HK.00700"], "ktype": "1m", "broker": "ib", "count": "abc"})
-            check("WS 參數不合法明確報錯", until(ws, "message", "bad_request:") != {}, "")
+            bad = events.until("message", "bad_request:")
+            check("WS 參數不合法明確報錯", bad.get("event") == "error"
+                  and str(bad["message"]).startswith("bad_request:"), str(bad)[:120])
             ws.send_json({"action": "ping"})
-            check("WS 未知 action 明確報錯", until(ws, "message", "bad_action:") != {}, "")
+            wrong = events.until("message", "bad_action:")
+            check("WS 未知 action 明確報錯", wrong.get("event") == "error"
+                  and str(wrong["message"]).startswith("bad_action:"), str(wrong)[:120])
 
         stream_app.state.brokery = StubQuote()
         with client.websocket_connect(f"/stream?api_key={KEY}") as ws:
+            events = WsEvents(ws)
             ws.send_json({"action": "subscribe", "codes": ["HK.00700"], "ktype": "1m", "count": 3, "broker": "ib"})
-            ws.receive_json()  # subscribed
-            update = until(ws, "event", "update")  # 有上限：事件未到來即判失敗，不無限等待
+            events.next()  # subscribed
+            update = events.until("event", "update")  # 有上限：事件未到來即判失敗，不無限等待
+            data = update.get("data") or {}
             check("WS update 事件帶完整序列且欄位為 K_COLUMNS",
-                  update["event"] == "update" and update["code"] == "HK.00700"
-                  and update["data"]["columns"] == list(K_COLUMNS) and len(update["data"]["rows"]) == 1,
+                  update["event"] == "update" and update.get("code") == "HK.00700"
+                  and data.get("columns") == list(K_COLUMNS) and len(data.get("rows", [])) == 1,
                   str(update)[:120])
-            pushed = pd.DataFrame(update["data"]["rows"], columns=update["data"]["columns"])
+            pushed = pd.DataFrame(data.get("rows", []), columns=data.get("columns", []))
             check("update 的 rows 可重建 DataFrame", list(pushed.columns) == list(K_COLUMNS)
-                  and pushed["ts"].iloc[0] == SAMPLE["ts"], f"{len(pushed)} 行")
+                  and len(pushed) == 1 and pushed["ts"].iloc[0] == SAMPLE["ts"], f"{len(pushed)} 行")
             ws.send_json({"action": "stop"})
-            closed = until(ws, "event", "closed")
+            closed = events.until("event", "closed")
             check("WS stop 回報 closed 並說明名額", closed["event"] == "closed" and "release_in" in closed,
                   str(closed)[:120])
 
+        # 用一段之前沒用過的券商名：名額是按券商登記、且要待執行緒結束才釋放，沿用別家會令這裡
+        # 收到 stream_busy 而不是 update，失敗時便看不出是 raw 欄位的問題還是名額的問題。
         with client.websocket_connect(f"/stream?api_key={KEY}") as ws:
+            events = WsEvents(ws)
             ws.send_json({"action": "subscribe", "codes": ["HK.00700"], "ktype": "1m", "count": 3,
-                          "broker": "futu", "raw": True})
-            ws.receive_json()  # subscribed
-            raw_update = until(ws, "event", "update")
+                          "broker": "stubraw", "raw": True})
+            sub = events.next()
+            check("raw 訂閱先回報 subscribed（名額未被前面的連接佔用）", sub["event"] == "subscribed",
+                  str(sub)[:120])
+            raw_update = events.until("event", "update")
             check("WS raw=True 時 update 的欄位即原生欄位",
                   raw_update["event"] == "update"
-                  and raw_update["data"]["columns"] == list(NATIVE_BAR), str(raw_update)[:160])
+                  and (raw_update.get("data") or {}).get("columns") == list(NATIVE_BAR),
+                  str(raw_update)[:160])
 
         hold = HoldQuote()
         stream_app.state.brokery = hold
         with client.websocket_connect(f"/stream?api_key={KEY}") as ws:
+            events = WsEvents(ws)
             ws.send_json({"action": "subscribe", "codes": ["HK.00700"], "ktype": "1m", "broker": "tiger"})
-            ws.receive_json()  # subscribed：名額於此刻已登記，故第二條必定被拒
+            events.next()  # subscribed：名額於此刻已登記，故第二條必定被拒
             ws.send_json({"action": "subscribe", "codes": ["HK.00700"], "ktype": "1m", "broker": "tiger"})
-            busy = ws.receive_json()
+            busy = events.next()
             check("同一券商同時只容許一條串流", busy["event"] == "error"
                   and str(busy["message"]).startswith("stream_busy:"), str(busy)[:140])
             hold.gate.set()
+
+    # ---------- 券商開關喜好（BROKER 管理）：啟動讀檔注入、寫檔只在 core 成功之後、被停用者不經過它 ----------
+    # 兩個存根券商代替真實適配器（不連線）；喜好檔指到臨時目錄，不觸及用戶實際的 broker_prefs.json。
+    # 注意 prefs 是以名字 import 了 data_dir，故要改 prefs.data_dir，改 store 不會生效。
+    tmp_dir = Path(tempfile.mkdtemp(prefix="brokery_api_prefs_"))
+    original_dir, original_brokers = prefs.data_dir, dict(core.BROKERS)
+    prefs.data_dir = lambda: tmp_dir
+    core.BROKERS.update({cls.source: cls for cls in (StubPrefsBroker, StubPrefsBrokerTwo)})
+    try:
+        def prefs_rows(client) -> tuple[list[dict], dict]:
+            body = client.get("/brokers/prefs", headers=HEADERS).json()
+            cols = body["data"]["columns"]
+            return [dict(zip(cols, row)) for row in body["data"]["rows"]], body
+
+        prefs_app = create_app(sources=("stubone", "stubtwo"), api_key=KEY)
+        with TestClient(prefs_app) as client:
+            health = client.get("/health").json()
+            check("喜好檔不存在即全部生效：/health 的生效集合即 API_SOURCES",
+                  health["data"]["sources"] == ["stubone", "stubtwo"]
+                  and Path(health["data"]["prefs_file"]).parent == tmp_dir,
+                  f"{health['data']['sources']} {health['data']['prefs_file']}")
+
+            rows, body = prefs_rows(client)
+            check("/brokers/prefs 欄位為 PREF_COLUMNS",
+                  body["status"] and body["data"]["columns"] == PREF_COLUMNS, body["data"]["columns"])
+            check("/brokers/prefs 列出全部券商（含未配置者，否則無法重新啟用）",
+                  [row["source"] for row in rows] == list(core.BROKERS), str([r["source"] for r in rows]))
+            unconfigured = [row for row in rows if row["source"] == "futu"]
+            check("未配置者 configured=False 且 detail 點名 .env 只啟用了誰",
+                  len(unconfigured) == 1 and not unconfigured[0]["configured"]
+                  and "API_SOURCES" in unconfigured[0]["detail"], str(unconfigured))
+
+            one = client.get("/brokers/prefs/update", params={"enabled": "stubone"},
+                             headers=HEADERS).json()
+            check("設定生效名單即時生效：/health 只剩該家",
+                  one["status"] and client.get("/health").json()["data"]["sources"] == ["stubone"],
+                  one["message"])
+            check("寫檔只記被停用者（檔不存在即全部生效，故改 .env 後檔不變舊）",
+                  prefs.load_disabled() == ["stubtwo"], str(prefs.load_disabled()))
+            caps = client.get("/capabilities", headers=HEADERS).json()["data"]
+            check("/capabilities 只列生效者：被停用者連能力都不出現",
+                  caps["sources"] == ["stubone"] and list(caps["adapters"]) == ["stubone"],
+                  str(caps["sources"]))
+            disabled = client.get("/kline", params={"code": "HK.00700", "broker": "stubtwo"},
+                                  headers=HEADERS)
+            check("指定被停用的券商：HTTP 200 且明確 broker_disabled（與 unknown_source 分清楚）",
+                  disabled.status_code == 200 and disabled.json()["message"].startswith("broker_disabled:"),
+                  disabled.json()["message"])
+            kept = client.get("/kline", params={"code": "HK.00700", "broker": "stubone", "ktype": "1m",
+                                               "count": 3, "autype": "none"}, headers=HEADERS).json()
+            check("生效者照常取數，且被停用者完全沒被經過",
+                  kept["status"] and len(kept["data"]["rows"]) == 1
+                  and STUB_CALLS["stubone"] == ["get_kline"] and STUB_CALLS["stubtwo"] == [],
+                  f"{kept['message']} {dict(STUB_CALLS)}")
+
+            upper = client.get("/brokers/prefs/update", params={"enabled": "STUBTWO"},
+                               headers=HEADERS).json()
+            check("券商名稱是小寫標識：enabled 不得經大寫化（否則會變成不存在的名字）",
+                  upper["status"] and client.get("/health").json()["data"]["sources"] == ["stubtwo"],
+                  upper["message"])
+            before = client.get("/health").json()["data"]["sources"]
+            bogus = client.get("/brokers/prefs/update", params={"enabled": "nope"}, headers=HEADERS).json()
+            check("名稱不存在時明確報錯，且狀態與喜好檔都不變",
+                  bogus["status"] is False and bogus["message"].startswith("unknown_source:")
+                  and client.get("/health").json()["data"]["sources"] == before
+                  and prefs.load_disabled() == ["stubone"],
+                  f"{bogus['message']} 檔={prefs.load_disabled()}")
+
+            all_off = client.get("/brokers/prefs/update", headers=HEADERS).json()
+            rows, _ = prefs_rows(client)
+            check("省略 enabled 即全部停用（與界面取消全部開關一致）",
+                  all_off["status"] and client.get("/health").json()["data"]["sources"] == []
+                  and all(not row["enabled"] for row in rows if row["source"].startswith("stub")),
+                  all_off["message"])
+            empty = client.get("/brokers", headers=HEADERS).json()
+            check("全部停用時 no_source 點名被停用者，不砌出空列表",
+                  empty["status"] is False and empty["message"].startswith("no_source:")
+                  and "stubone" in empty["message"] and "（）" not in empty["message"],
+                  empty["message"])
+            # 新建一個應用即等同重啟閘道：lifespan 讀檔注入，故三個界面重啟後開關照舊。
+            with TestClient(create_app(sources=("stubone", "stubtwo"), api_key=KEY)) as restarted:
+                check("重啟即照喜好檔生效（三個界面共用同一份）",
+                      restarted.get("/health").json()["data"]["sources"] == []
+                      and prefs.load_disabled() == ["stubone", "stubtwo"],
+                      f"檔={prefs.load_disabled()}")
+
+            # 共用靜態資源：三個界面載入同一份規格，頁面本身不需金鑰（與控制台頁面一致）。
+            asset = client.get("/static/chart.js")
+            check("/static/chart.js 不需金鑰且內容即 brokery/static/chart.js（只有一份）",
+                  asset.status_code == 200 and asset.content == chart.static_file("chart.js").read_bytes(),
+                  f"HTTP {asset.status_code}，{len(asset.content)} 字節")
+            vendor = client.get("/static/echarts.min.js")
+            check("/static/echarts.min.js 為本地副本（GUI 與 Docker 離線都畫到圖）",
+                  vendor.status_code == 200 and len(vendor.content) > 100_000,
+                  f"HTTP {vendor.status_code}，{len(vendor.content)} 字節")
+            missing = client.get("/static/nope.js")
+            check("不存在的靜態資源明確 404", missing.status_code == 404
+                  and "static_missing" in missing.text, missing.text[:120])
+    finally:
+        prefs.data_dir = original_dir
+        core.BROKERS.clear()
+        core.BROKERS.update(original_brokers)
+        STUB_CALLS.clear()
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     for label, passed, detail in checks:
         print(f"{'PASS' if passed else 'FAIL'} {label}（{detail}）")
@@ -400,7 +583,8 @@ def main() -> dict:
     if failed:
         return {"status": False, "data": data, "message": "失敗：" + "；".join(failed)}
     return {"status": True, "data": data,
-            "message": f"{len(checks)} 項檢查全過：鑑權、欄位契約、JSON 取值口徑、串流協定與日誌均符合（離線，未連券商）"}
+            "message": f"{len(checks)} 項檢查全過：鑑權、欄位契約、JSON 取值口徑、串流協定、日誌、"
+                       "券商開關喜好與共用靜態資源均符合（離線，未連券商）"}
 
 
 if __name__ == "__main__":

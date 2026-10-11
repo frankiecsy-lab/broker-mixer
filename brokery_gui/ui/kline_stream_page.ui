@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>KlineStreamPage</class>
+ <widget class="QWidget" name="KlineStreamPage">
+  <layout class="QVBoxLayout" name="pageLayout">
+   <item>
+    <layout class="QHBoxLayout" name="toolLayout">
+     <item>
+      <widget class="QLabel" name="codeLabel"/>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="codeEdit"/>
+     </item>
+     <item>
+      <widget class="QLabel" name="ktypeLabel"/>
+     </item>
+     <item>
+      <widget class="QComboBox" name="ktypeCombo"/>
+     </item>
+     <item>
+      <widget class="QLabel" name="countLabel"/>
+     </item>
+     <item>
+      <widget class="QSpinBox" name="countSpin">
+       <property name="minimum">
+        <number>1</number>
+       </property>
+       <property name="maximum">
+        <number>1000</number>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="brokerLabel"/>
+     </item>
+     <item>
+      <widget class="QComboBox" name="brokerCombo"/>
+     </item>
+     <item>
+      <widget class="QPushButton" name="startButton"/>
+     </item>
+     <item>
+      <widget class="QPushButton" name="stopButton"/>
+     </item>
+     <item>
+      <widget class="QLabel" name="summaryLabel"/>
+     </item>
+     <item>
+      <spacer name="toolSpacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QLabel" name="messageLabel">
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QTableWidget" name="klineTable">
+     <property name="editTriggers">
+      <set>QAbstractItemView::NoEditTriggers</set>
+     </property>
+     <property name="selectionBehavior">
+      <enum>QAbstractItemView::SelectRows</enum>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

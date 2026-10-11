@@ -1,6 +1,6 @@
 """驗收離線快照的更新路徑：原子寫入與 .prev 備份、某品種明顯縮細時拒絕覆蓋、某品種本次取不到時
 沿用舊快照該品種、取數失敗時保留原快照、差額回報、過期判定（CODES_MAX_AGE_HOURS），以及閘道只在
-快照過舊時才在背景自動更新。
+快照過舊時才在背景自動更新（該券商已停用則不更新）。
 
 另驗收「各券商各一檔」：兩家券商寫出兩份互不混雜的快照，縮細防護與沿用舊快照只與同券商的舊快照
 比較，get_code 亦只讀自己所指定那一檔；能力不全者（如只有期貨與指數）照其所声明的內容存放。
@@ -67,10 +67,17 @@ class SilentLog:
 
 
 class CountingRefresh:
-    """代替 Brokery 的自動更新調用點：只記錄被呼叫的次數，用來核對閘道的過期判定。"""
+    """代替 Brokery 的自動更新調用點：只記錄被呼叫的次數，用來核對閘道的過期判定。
 
-    def __init__(self) -> None:
+    閘道在判定過期前先讀 `sources()`（預設券商被停用即不該向它取數），故存根要能聲明生效的券商。
+    """
+
+    def __init__(self, sources: tuple[str, ...] = (BROKER,)) -> None:
         self.calls = 0
+        self.enabled = tuple(sources)
+
+    def sources(self) -> tuple[str, ...]:
+        return self.enabled
 
     def refresh_codes(self, **kwargs) -> dict:
         self.calls += 1
@@ -190,6 +197,10 @@ def main() -> dict:
         store.update_meta(DATASET, saved_at="2020-01-01T00:00:00+00:00")
         auto_refresh_codes(counter, SilentLog())
         check("快照過舊時才自動更新", counter.calls == 1, f"calls={counter.calls}")
+        counter.enabled = ()  # 該券商已在 BROKER 管理中停用：快照再舊也不向它取數
+        auto_refresh_codes(counter, SilentLog())
+        check("預設券商被停用時不做背景自動更新", counter.calls == 1, f"calls={counter.calls}")
+        counter.enabled = (BROKER,)
         store.meta_path(DATASET).unlink()
         auto_refresh_codes(counter, SilentLog())
         check("尚無快照時視為最舊並自動更新", counter.calls == 2, f"calls={counter.calls}")

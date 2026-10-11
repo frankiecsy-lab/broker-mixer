@@ -1,6 +1,6 @@
 """驗收 `brokery_api/ui.html` 的客戶端行為：以存根閘道（不連任何券商、不佔用 `.env` 的 API_PORT）
 提供 `/`、`/health`、`/capabilities`、`/brokers`、`/logs`、`/accounts`、`/stocks`、`/codes`、
-`/codes/meta`、`/codes/refresh`，再用
+`/codes/meta`、`/codes/refresh`、`/kline` 與 `/static/chart.js`（原樣取自 brokery/static），再用
 Chromium 載入頁面，核對內聯腳本無語法錯誤、頂欄按 `/brokers` 渲染四家連線指示（可連顯示延遲毫秒、
 斷開顯示「斷開」並在懸停顯示原因）、金鑰填入後存入 localStorage 並在重新載入後自動回填，探測只由
 載入與「探測連線」按鈕觸發（不輪詢）。
@@ -18,6 +18,10 @@ Chromium 載入頁面，核對內聯腳本無語法錯誤、頂欄按 `/brokers`
 「更新離線 CODES」（查唔到往往只係快照冇咗新上市的代碼）。標的頁的定時更新預設只重讀離線快照（不打券商），
 勾上「自動向券商重拉」才改為向券商取清單。
 讀取提示另驗：請求進行時訊息位與各區均顯示讀取中（存根對 /stocks 故意延遲 0.8 秒以便觀察）。
+K 線頁另驗：預設標的為 HK.HSImain、週期 1m、根數 1000；圖表規格由 /static/chart.js 載入（不再是 CDN），
+故存根必須原樣提供 brokery/static 內的檔案；取歷史的請求帶上所選參數，返回後以 ECharts 畫出 canvas，
+下方表格按時間反序（最新在最上）；串流的 update 只帶最近幾根，必須與已拉取的序列合併而不是取代
+（同 ts 以新到者覆蓋，行數不縮減）。
 
 需要 Chromium（`pip install playwright` 後 `playwright install chromium`）；未安裝時跳過並返回成功。
 
@@ -34,7 +38,8 @@ from urllib.parse import parse_qs
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # 項目根目錄
 
-from brokery.brokers.base import ACCOUNT_COLUMNS, BROKER_COLUMNS, COLUMNS
+from brokery import chart
+from brokery.brokers.base import ACCOUNT_COLUMNS, BROKER_COLUMNS, COLUMNS, K_COLUMNS
 from brokery.core import CODES_META_COLUMNS
 
 UI = Path(__file__).resolve().parents[2] / "brokery_api" / "ui.html"
@@ -51,6 +56,16 @@ ACCOUNT_ROWS = [["futu", "1234567", "individual", "ACTIVE", "HKD"] + [1000.0] * 
 # 不設到期月欄，券商原生標識只在 raw=True 的原生格式中出現。
 STOCK_ROWS = [["HK.00700", "騰訊控股", "HK", "00700", "STOCK", "HKD", "HKEX", "futu"],
               ["US.AAPL", "蘋果", "US", "AAPL", "STOCK", "USD", "NASDAQ", "futu"]]
+# K 線：ts 固定，用以核對表格反序（最新在最上）與「串流的 update 只帶最近幾根，不得蓋走已拉取的序列」。
+K_BASE = 1_760_000_000
+
+
+def kline_payload(start_index: int, count: int, close) -> dict:
+    rows = [["HK.HSImain", K_BASE + i * 60, "2026-10-09 09:30:00", 100.0, 101.0, 99.0, close(i),
+             10 + i, 1000.0, "futu"] for i in range(start_index, start_index + count)]
+    return {"status": True, "data": {"columns": K_COLUMNS, "rows": rows}, "message": f"ok（{count} 根）"}
+
+
 # 能力聲明為各家實際聲明者（實測），非湊齊：ib 冇股票清單、webull 冇指數清單。
 CAPS = {"sources": ["futu", "ib", "tiger", "webull"], "ktypes": ["day", "1m"],
         "acc_filters": ["all", "cash", "margin"],
@@ -94,10 +109,14 @@ class Stub(BaseHTTPRequestHandler):
             time.sleep(Stub.SLOW[path])
         if path == "/":
             raw, ctype = UI.read_bytes(), "text/html; charset=utf-8"
+        elif path.startswith("/static/"):
+            # 圖表規格只有一份：頁面載入的是 brokery/static 內的檔案，存根不得以 JSON 頂替。
+            raw, ctype = chart.static_file(path.rsplit("/", 1)[-1]).read_bytes(), "text/javascript; charset=utf-8"
         else:
             body = {
                 "/health": {"status": True, "data": {}, "message": "ok"},
                 "/capabilities": {"status": True, "data": CAPS, "message": "ok"},
+                "/kline": kline_payload(0, 4, lambda i: float(100 + i)),
                 "/brokers": {"status": True,
                              "data": {"columns": BROKER_COLUMNS, "rows": ROWS}, "message": "ok"},
                 "/logs": {"status": True, "data": {"columns": ["ts", "level", "message"], "rows": []},
@@ -255,6 +274,27 @@ def main() -> dict:
             page.fill("#c-interval", "0")
             page.wait_for_timeout(2500)
             codes_idle = [p for p in Stub.raw if p.startswith("/codes") or p.startswith("/all")]
+
+            # K 線頁：預設值 → 取歷史（核對請求口徑、圖表與反序表格）→ 餵入一組只帶最近幾根的
+            # update，核對頁面是合併而不是取代（否則 1000 根歷史會被一條 update 縮返幾根）。
+            page.click("nav button[data-tab='kline']")
+            page.wait_for_timeout(300)
+            k_defaults = [page.eval_on_selector(id_, "e => e.value")
+                          for id_ in ("#k-code", "#k-count", "#k-ktype", "#k-broker")]
+            Stub.raw.clear()
+            page.click("#k-load")
+            page.wait_for_timeout(1500)
+            kline_raw = [p for p in Stub.raw if p.startswith("/kline")]
+            canvases = len(page.query_selector_all("#chart canvas"))
+            k_head = page.eval_on_selector_all("#k-table th", "els => els.map(e => e.textContent)")
+            k_ts = page.eval_on_selector_all("#k-table tbody tr td:nth-child(2)",
+                                             "els => els.map(e => Number(e.textContent))")
+            merged = page.evaluate(
+                "([p]) => { mergeKline(p); return {size: kline.store.size, "
+                "ts: [...document.querySelectorAll('#k-table tbody tr td:nth-child(2)')]"
+                ".map((e) => Number(e.textContent)), "
+                "top: document.querySelector('#k-table tbody tr td:nth-child(7)').textContent}; }",
+                [kline_payload(2, 3, lambda i: 9999.0)["data"]])
             browser.close()
     finally:
         srv.shutdown()
@@ -339,6 +379,18 @@ def main() -> dict:
           ",".join(live_codes))
     check("標的頁改回 0 秒即停止定時更新", not codes_idle, ",".join(codes_idle))
 
+    check("K 線頁預設為 HK.HSImain／1m／1000 根，券商為生效的第一家",
+          k_defaults == ["HK.HSImain", "1000", "1m", "futu"], ",".join(k_defaults))
+    check("取歷史的請求帶上所選標的、週期、根數與券商",
+          kline_raw == [f"/kline?code=HK.HSImain&ktype=1m&count=1000&broker=futu"], ",".join(kline_raw))
+    check("圖表由 /static/chart.js 與本地 echarts 畫出（已冇 CDN）", canvases == 1, f"{canvases} 個 canvas")
+    check("下方 DF 按時間反序：最新在最上",
+          k_head[:3] == K_COLUMNS[:3] and len(k_ts) == 4 and k_ts == sorted(k_ts, reverse=True),
+          ",".join(str(t) for t in k_ts))
+    check("update 只帶最近幾根時與已拉取的序列合併（同 ts 覆蓋，行數不縮減）",
+          merged["size"] == 5 and merged["ts"] == [K_BASE + i * 60 for i in (4, 3, 2, 1, 0)]
+          and float(merged["top"]) == 9999.0, str(merged))
+
     for label, passed, detail in checks:
         print(f"{'PASS' if passed else 'FAIL'} {label}（{detail}）")
     failed = [label for label, passed, _ in checks if not passed]
@@ -346,7 +398,8 @@ def main() -> dict:
         return {"status": False, "data": chips, "message": "失敗：" + "；".join(failed)}
     return {"status": True, "data": chips,
             "message": f"{len(checks)} 項檢查全過：四家指示、金鑰記憶、戶口頁按秒自動更新（0 即不更新）與來源汇总、"
-                       "標的來源標示與離線 CODES 表格、按券商各讀各更新一檔、快照年齡顯示均正常"}
+                       "標的來源標示與離線 CODES 表格、按券商各讀各更新一檔、快照年齡顯示、"
+                       "K 線頁預設值與共用 chart.js 渲染（DF 反序、update 合併）均正常"}
 
 
 if __name__ == "__main__":

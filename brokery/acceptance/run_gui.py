@@ -1,8 +1,9 @@
 """驗收 `brokery_gui`（PySide6 桌面 GUI）：界面只負責顯示，資料一律經 brokery_api 閘道（以存根閘道提供
-/accounts、/capabilities 與三個清單接口，不連任何券商、不佔用 .env 的 API_PORT）。以 offscreen 方式離屏運行，
-不需顯示器。核對：
+/accounts、/capabilities、三個清單接口、離線 CODES、/kline 與 /brokers/prefs，另以 QWebSocketServer 提供
+/stream 存根；不連任何券商、不佔用 .env 的 API_PORT）。以 offscreen 方式離屏運行，不需顯示器。核對：
 
-* 界面與文字分離：三個 .ui 檔內不含任何文字（<string>），顯示文字一律由 locales/<語言>.json 按鍵取；
+* 界面與文字分離：六個 .ui 檔內不含任何文字（<string>），顯示文字一律由 locales/<語言>.json 按鍵取；
+  六個分頁（戶口／標的／K 線拉取／K 線串流／K 線圖／BROKER 管理）的標題切換語言時全部重貼；
 * 多語：繁體中文／简体中文／English 三份語言檔鍵集合一致，切換即時生效且不需重建窗口，界面用到的鍵無缺譯；
 * 表格欄位與順序即 ACCOUNT_COLUMNS／COLUMNS（由返回的 columns 決定），取不到的金額顯示破折號、資金欄為
   千分位兩位小數、按來源統計條數；
@@ -18,6 +19,15 @@
 * 自動更新以秒數設定（QSpinBox），0 即不更新且為預設：為 0 時等兩秒不會多送任何請求；設為 1 秒後戶口頁會
   定時重取戶口；標的頁預設只重讀離線快照（不打券商），勾上「自動向券商重拉」才定時重取清單；定時器只針對
   當前分頁，且有在途請求時不觸發；
+* K 線三個分頁的預設值為 HK.HSImain／1m／1000（根數上限 1000）；週期與券商選項只由 /capabilities 填充
+  （ktypes 原樣照用、被停用者不在選項內），取數只向 /kline 送出代碼／週期／根數，不由界面校验；
+* 表格顯示的 K 線欄位即 K_COLUMNS，且按時間反序（最新在最上）：反序只在顯示層，序列本身與接口一樣為 ts 升序；
+* 串流只經閘道的 /stream（QWebSocket 對存根）：訂閱即送出與協定相同的 subscribe，收到的 update 必須與已取得的
+  序列合併（同 ts 覆蓋、行數不縮返最近幾根），訂閱期間「訂閱」不可再按，按「停止」即結束並解鎖；
+* K 線圖分頁的渲染視圖惰性建立，起不來即說明原因而不是留一塊空白，下方 DF 照常；渲染只交一份共用的 chart.js
+  （只核對 brokery.chart 產生的 DataFrame 與注入呼叫，不核對像素）；
+* BROKER 管理頁列出全部券商（含 .env 未配置者：開關灰掉並讀原因），套用即向 /brokers/prefs/update 交完整名單，
+  完成後以返回的行重畫開關，且各頁的券商下拉框即時不再列被停用者；
 * 閘道不可達與金鑰不正確均明確報錯（狀態列為取數失敗、原因原樣顯示）；未設 API_KEY 即拒絕建立客戶端；
 * `brokery_gui/run.py` 啟動後窗口會一直存活（頂層窗口無父，啟動腳本若不持有引用即被解構、事件循環 abort）。
 
@@ -33,14 +43,20 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # 項目根目錄
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # 離屏運行，不需顯示器
+# 離屏環境下 QtWebEngine 要關掉沙箱與 GPU，否則 K 線圖分頁的視圖無法初始化（屬環境，不是代碼）。
+os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--no-sandbox --disable-gpu")
 
-from PySide6 import QtWidgets  # noqa: E402
+from PySide6 import QtCore, QtWidgets  # noqa: E402
+from PySide6.QtNetwork import QHostAddress  # noqa: E402
+from PySide6.QtWebSockets import QWebSocketServer  # noqa: E402
 
-from brokery.brokers.base import ACCOUNT_COLUMNS, COLUMNS  # noqa: E402
-from brokery.core import CODES_META_COLUMNS  # noqa: E402
+from brokery import chart  # noqa: E402
+from brokery.brokers.base import ACCOUNT_COLUMNS, COLUMNS, K_COLUMNS  # noqa: E402
+from brokery.core import CODES_META_COLUMNS, PREF_COLUMNS  # noqa: E402
 from brokery_gui.api import GatewayClient  # noqa: E402
 from brokery_gui.app import DesktopGui, cell_text  # noqa: E402
 from brokery_gui.i18n import LOCALE_DIR, Translator, available, load  # noqa: E402
@@ -67,13 +83,50 @@ RAW_ROWS = [["00700", "騰訊控股", "騰訊控股股份有限公司", "2026-10
 # 能力聲明：ib 唔提供股票 → 該選項應標註原因且不可選（由適配器聲明，唔喺界面硬寫）。
 # 值必須與真實閘道一致：capabilities 序列化自 SymbolBroker.capabilities，即 symbol_type 的大寫常量
 # （codes.STOCK/FUTURE/INDEX）。存根若用細寫即掩蓋界面以 kind 直接比對的錯誤。
-CAPABILITIES = {
-    "sources": ["futu", "ib"],
-    "adapters": {
-        "futu": {"capabilities": ["STOCK", "FUTURE", "INDEX"]},
-        "ib": {"capabilities": ["FUTURE", "INDEX"]},
-    },
-}
+ADAPTER_CAPS = {"futu": ["STOCK", "FUTURE", "INDEX"], "ib": ["FUTURE", "INDEX"]}
+# BROKER 開關：BROKERS 是所有可用券商（含 .env 未配置者），CONFIGURED 模擬 .env 只配置了兩家。
+# 未配置者必須以 configured=False 列出（開關灰掉並讀原因），而不是從頁面上消失——被停用者要能重新啟用。
+BROKERS = ["futu", "ib", "tiger", "webull"]
+CONFIGURED = ["futu", "ib"]
+DISABLED: set[str] = set()   # 存根狀態：只記被停用者，與 broker_prefs.json 同一口徑
+
+
+def effective() -> list[str]:
+    """生效的券商 = 已配置 − 已停用：/capabilities 只列生效者，三個下拉框因此自動跟隨開關。"""
+    return [name for name in CONFIGURED if name not in DISABLED]
+
+
+def capabilities() -> dict:
+    """ktypes 刻意非排序（day 在前）：界面若自己排序、自行補週期或把預設改成第一项，即會被發現。"""
+    return {"sources": effective(), "ktypes": ["day", "1m"],
+            "adapters": {name: {"capabilities": ADAPTER_CAPS[name]} for name in effective()}}
+
+
+def prefs_rows() -> list:
+    return [[name, name in CONFIGURED and name not in DISABLED, name in CONFIGURED,
+             "" if name in CONFIGURED else f"未在 API_SOURCES 中（.env 只啟用了 {', '.join(CONFIGURED)}）"]
+            for name in BROKERS]
+
+
+def prefs_envelope() -> dict:
+    return {"status": True, "data": {"columns": list(PREF_COLUMNS), "rows": prefs_rows()},
+            "message": f"ok: 生效 {len(effective())} 家（已停用 {', '.join(sorted(DISABLED)) or '無'}）"}
+
+
+# K 線：ts 為 UTC 秒，行必須嚴格對應 K_COLUMNS（最後一欄 source 供界面按來源統計）。
+K_BASE = 1_760_000_000
+
+
+def kline_rows(start_index: int, count: int, close) -> dict:
+    return {"columns": list(K_COLUMNS),
+            "rows": [["HK.HSImain", K_BASE + i * 60, "2026-10-09 09:31:00", 100.0, 101.0, 99.0, close(i),
+                      10 + i, 1000.0, "futu"] for i in range(start_index, start_index + count)]}
+
+
+# 分頁標題以 .ui 的根物件名為鍵，故 addTab 的順序改了也不會錯位：這裡按順序核對六項。
+TAB_TITLES = {"zh-Hant": ("戶口清單", "標的列表", "K 線拉取", "K 線串流", "K 線圖", "BROKER 管理"),
+              "zh-Hans": ("户口清单", "标的列表", "K 线拉取", "K 线串流", "K 线图", "BROKER 管理"),
+              "en": ("Accounts", "Symbols", "K-line Pull", "K-line Stream", "K-line Chart", "Broker Settings")}
 # 離線 CODES 快照的元資料：一行，欄位與順序即 CODES_META_COLUMNS。刻意給一筆超過 24 小時且上次更新失敗
 # 的快照（距今 90000 秒 → 界面顯示「1 天前」），要驗的正是「過舊以警告色而非錯誤色提示」。
 CODES_META_ROWS = [["futu_codes", 38569, 8, "2026-10-10T10:00:00+00:00", 90000.0, True, "futu",
@@ -92,8 +145,14 @@ def codes_meta_rows(broker: str) -> list:
              True, broker, "HK/US 全量 CODES", "futu: OpenD 未連接" if broker == "futu" else ""]]
 
 
+def query_params(path: str) -> dict[str, str]:
+    """查詢串 → 參數：必須用 parse_qs，手動 split 會把 %2C（逗號）留成原樣，核對不到真實名單。"""
+    found = parse_qs(path.split("?", 1)[1]) if "?" in path else {}
+    return {name: values[0] for name, values in found.items()}
+
+
 class Stub(BaseHTTPRequestHandler):
-    """存根閘道：只提供戶口、能力、三個清單接口與離線 CODES 的兩個接口，並記錄收到的金鑰與完整路徑，
+    """存根閘道：只提供戶口、能力、三個清單接口、離線 CODES、K 線與券商開關，並記錄收到的金鑰與完整路徑，
     足以核對請求口徑。"""
 
     hits: list[str] = []
@@ -112,7 +171,7 @@ class Stub(BaseHTTPRequestHandler):
         if supplied != KEY:
             body, code = {"detail": "forbidden: API Key 不正確"}, 403
         elif path == "/capabilities":
-            body, code = {"status": True, "data": CAPABILITIES, "message": "ok"}, 200
+            body, code = {"status": True, "data": capabilities(), "message": "ok"}, 200
         elif path in ("/stocks", "/futures", "/indices"):
             # 同一接口按 raw 參數供兩種格式：界面必須自己各取一次，不能憑統一格式假設渲染上表。
             data = ({"columns": RAW_COLUMNS, "rows": RAW_ROWS} if "raw=1" in self.path
@@ -131,6 +190,23 @@ class Stub(BaseHTTPRequestHandler):
                                                    "rows": codes_meta_rows(broker)}, "message": "ok"}, 200
         elif path == "/codes/refresh":
             body, code = CODES_REFRESH, 200
+        elif path == "/kline":
+            body, code = {"status": True, "data": kline_rows(0, 4, lambda i: 100.0 + i),
+                          "message": "ok: 4 根（futu）"}, 200
+        elif path == "/brokers/prefs":
+            body, code = prefs_envelope(), 200
+        elif path == "/brokers/prefs/update":
+            # 省略 enabled 即全部停用（與真實閘道一致）；名單不可經大寫化處理，未知者一律拒絕。
+            given = query_params(self.path)
+            names = [n for n in given["enabled"].split(",") if n] if "enabled" in given else []
+            unknown = [n for n in names if n not in BROKERS]
+            if unknown:
+                body, code = {"status": False, "data": {"columns": [], "rows": []},
+                              "message": f"unknown_source: {','.join(unknown)}"}, 200
+            else:
+                DISABLED.clear()
+                DISABLED.update(name for name in CONFIGURED if name not in names)
+                body, code = prefs_envelope(), 200
         else:
             body, code = {"detail": f"no such path: {self.path}"}, 404
         raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -139,6 +215,56 @@ class Stub(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
+
+
+class StreamStub:
+    """/stream 的存根：按協定回應，並記錄收到的每一幀（用以核對訂閱內容原樣送出）。
+
+    用 QWebSocketServer 而不是另起一個 asyncio 服務：桌面端的客戶端本身就是 QWebSocket，兩邊同一個事件循環，
+    不需要線程，也不會出現「存根比界面慢」的假象。
+    """
+
+    def __init__(self) -> None:
+        self.frames: list[dict] = []
+        self.broker = ""
+        self.server = QWebSocketServer("stream-stub", QWebSocketServer.NonSecureMode)
+        self.server.newConnection.connect(self._accept)
+        # 這個 PySide6 沒有 serveNextPort()：端口由系統分配後自己 listen，失敗即說清楚，不靜默退回固定端口。
+        if not self.server.listen(QHostAddress("127.0.0.1"), free_port()):
+            raise RuntimeError(f"無法為串流存根監聽端口：{self.server.errorString()}")
+        self.base = f"http://127.0.0.1:{self.server.serverPort()}"
+
+    def _accept(self) -> None:
+        # newConnection 不帶參數：待接入的連接要自己取，並立即接上收訊，否則第一幀即丟失。
+        socket = self.server.nextPendingConnection()
+        socket.textMessageReceived.connect(lambda text, s=socket: self._receive(text, s))
+
+    def _receive(self, text: str, socket) -> None:
+        try:
+            msg = json.loads(text)
+        except ValueError:
+            socket.sendTextMessage(json.dumps({"event": "error", "message": "bad_request: 不是 JSON"}))
+            return
+        self.frames.append(msg)
+        action = str(msg.get("action", "")).lower()
+        if action == "subscribe":
+            # closed 幀點名的是訂閱時所用的券商（與真實閘道一致），不是 stop 幀裡的欄位——stop 本來就不帶券商。
+            self.broker = str(msg.get("broker") or "")
+            socket.sendTextMessage(json.dumps({"event": "subscribed", "broker": msg.get("broker"),
+                                              "codes": msg.get("codes"), "ktype": msg.get("ktype"),
+                                              "seconds": 5}))
+            # 與真實閘道一樣，update 是之後按間隔推送的，不是訂閱的一刻即送完：否則「訂閱成功」的訊息在界面
+            # 出現的同一輪即被「已更新」蓋掉，驗收便分不開這兩步。
+            QtCore.QTimer.singleShot(300, lambda s=socket: self._push(s))
+        elif action == "stop":
+            socket.sendTextMessage(json.dumps({"event": "closed", "broker": self.broker}))
+
+    def _push(self, socket) -> None:
+        # 每次 update 帶的是該代碼「目前完整」的 bar：第二次只有 3 根且收市價不同。界面必須經 BarStore
+        # 合併（同 ts 覆蓋、其餘保留），否則已取的歷史會被縮返最近幾根。
+        for start, count, close in ((0, 4, lambda i: 100.0 + i), (2, 3, lambda i: 9999.0)):
+            socket.sendTextMessage(json.dumps({"event": "update", "code": "HK.HSImain",
+                                              "data": kline_rows(start, count, close)}))
 
 
 def free_port() -> int:
@@ -195,6 +321,11 @@ def combo_items(combo) -> list[str]:
             for i in range(combo.count())]
 
 
+def combo_values(combo) -> list[str]:
+    """下拉框各項的值（不是顯示文字）：週期與券商的選項由接口決定，要核對的是送出的值。"""
+    return [str(combo.itemData(i)) for i in range(combo.count())]
+
+
 def main() -> dict:
     checks: list[tuple[str, bool, str]] = []
 
@@ -203,8 +334,10 @@ def main() -> dict:
 
     ui_dir = Path(__file__).resolve().parents[2] / "brokery_gui" / "ui"
     texts = {p.name: p.read_text(encoding="utf-8") for p in sorted(ui_dir.glob("*.ui"))}
-    check("界面與文字分離：三個 .ui 檔齊全且檔內不含任何文字",
-          set(texts) == {"accounts_page.ui", "main_window.ui", "symbols_page.ui"}
+    check("界面與文字分離：六個頁面 .ui 檔齊全且檔內不含任何文字",
+          set(texts) == {"accounts_page.ui", "main_window.ui", "symbols_page.ui",
+                         "kline_pull_page.ui", "kline_stream_page.ui", "kline_chart_page.ui",
+                         "brokers_page.ui"}
           and all("<string>" not in t for t in texts.values()), ",".join(sorted(texts)))
 
     keysets = {lang: set(load(lang)) for lang in available()}
@@ -230,6 +363,24 @@ def main() -> dict:
 
     gui = DesktopGui(GatewayClient(base_url=base, api_key=KEY))
     window_id = id(gui.window)
+
+    # 四頁常設：分頁標題以 .ui 的根物件名為鍵，故按 addTab 的順序逐項核對，順序改了也不會錯位。
+    check("六個分頁齊全，標題一律由字庫按鍵取（.ui 內不含文字）",
+          gui.window.tabs.count() == 6
+          and tuple(gui.window.tabs.tabText(i) for i in range(6)) == TAB_TITLES["zh-Hant"],
+          "；".join(gui.window.tabs.tabText(i) for i in range(gui.window.tabs.count())))
+
+    # 預設值在建立時即填好，不等閘道回應：開頁即能直接按「取得」，不需要先讀一次能力聲明。
+    kline_pages = (gui.kline_pull, gui.kline_stream, gui.kline_chart)
+    check("三個 K 線頁的標的預設 HK.HSImain、根數預設 1000 且上限 1000",
+          all(p.codeEdit.text() == "HK.HSImain" and p.countSpin.value() == 1000
+              and p.countSpin.maximum() == 1000 for p in kline_pages),
+          "；".join(f"{p.codeEdit.text()}={p.countSpin.value()}/{p.countSpin.maximum()}" for p in kline_pages))
+    # 週期在建立時即有預設；券商名單由 /capabilities 決定，其預設要讀過能力聲明才成立（見 K 線拉取頁）。
+    check("K 線頁的週期下拉框在取數前已有預設 1m（券商則待能力聲明，見下）",
+          all(p.ktypeCombo.currentData() == "1m" for p in kline_pages),
+          "；".join(str(p.ktypeCombo.currentData()) for p in kline_pages))
+
     check("進入戶口頁即取一次並完成", pump(qt, gui), "背景請求未在 20 秒內完成")
     table = gui.accounts.accountsTable
     check("戶口表格欄位與順序即 ACCOUNT_COLUMNS", headers(table) == ACCOUNT_COLUMNS, ",".join(headers(table)[:3]))
@@ -387,12 +538,151 @@ def main() -> dict:
     pump_for(qt, 2.0)
     check("標的頁改回 0 秒即停止定時更新", not Stub.queries, ",".join(Stub.queries))
 
-    for language, tab0, kind0 in (("zh-Hans", "户口清单", "股票"), ("en", "Accounts", "Stocks")):
+    # ------------------------------------------------------------------- K 線拉取
+    # 進入 K 線頁只重讀能力聲明（週期與券商的選項由它決定），取數仍由按鈕觸發：開頁即打券商會白付連線成本。
+    Stub.queries.clear()
+    gui.window.tabs.setCurrentWidget(gui.kline_pull)
+    pump(qt, gui)
+    check("進入 K 線頁只重讀能力聲明，不自行取數", Stub.queries == ["/capabilities"], ",".join(Stub.queries))
+    check("週期選項只由 /capabilities 的 ktypes 填充且順序原樣（不自行排序、不憑空補週期），預設仍為 1m",
+          all(combo_values(p.ktypeCombo) == ["day", "1m"] and p.ktypeCombo.currentData() == "1m"
+              for p in kline_pages),
+          "；".join(",".join(combo_values(p.ktypeCombo)) for p in kline_pages))
+    check("K 頁的券商下拉框只列生效的券商並預設 futu（未配置者不出現，且不像標的頁那樣按品種過濾）",
+          all(combo_values(p.brokerCombo) == ["futu", "ib"] and p.brokerCombo.currentData() == "futu"
+              for p in kline_pages),
+          "；".join(f"{','.join(combo_values(p.brokerCombo))}->{p.brokerCombo.currentData()}"
+                    for p in kline_pages))
+
+    Stub.queries.clear()
+    gui.kline_pull.loadButton.click()
+    check("按「取得」即按控制列現值向 /kline 送出（參數原樣交閘道判定，界面不另設一套）",
+          wait_until(qt, lambda: Stub.queries)
+          and Stub.queries[0] == "/kline?code=HK.HSImain&ktype=1m&count=1000&broker=futu" and pump(qt, gui),
+          ",".join(Stub.queries))
+    table = gui.kline_pull.klineTable
+    check("K 線表格欄位即 K_COLUMNS（含 source，供界面按來源統計）",
+          headers(table) == K_COLUMNS, ",".join(headers(table)))
+    stored = gui.panes["KlinePullPage"].store.payload()
+    check("表格按時間反序（最新在最上），存放仍為 ts 升序：反序只屬顯示層，圖表與跨券商對齊不受影響",
+          [row[1] for row in stored["rows"]] == [K_BASE + i * 60 for i in range(4)]
+          and [cell(table, r, 1) for r in range(4)] == [str(K_BASE + i * 60) for i in range(3, -1, -1)],
+          ",".join(cell(table, r, 1) for r in range(table.rowCount())))
+    check("按來源統計根數", "共 4 根" in gui.kline_pull.summaryLabel.text()
+          and "futu：4 根" in gui.kline_pull.summaryLabel.text(), gui.kline_pull.summaryLabel.text())
+
+    # ------------------------------------------------------------------- K 線串流
+    stream = StreamStub()
+    Stub.queries.clear()
+    gui.window.tabs.setCurrentWidget(gui.kline_stream)
+    pump(qt, gui)
+    check("進入 K 線串流頁只重讀能力聲明、不自行取數，未訂閱時「停止」不可按",
+          Stub.queries == ["/capabilities"] and gui.kline_stream.startButton.isEnabled()
+          and not gui.kline_stream.stopButton.isEnabled(),
+          ",".join(Stub.queries))
+    # 串流地址由閘道 base_url 推出（同一主機同一端口，不存在另一套地址），故這裡只把客戶端指向存根；
+    # 換指向要在能力聲明讀完之後，否則那次 /capabilities 會打到只懂 WebSocket 的存根。
+    real_base, gui.client.base_url = gui.client.base_url, stream.base
+    gui.kline_stream.startButton.click()
+    check("按「訂閱」即按控制列現值向 /stream 送出訂閱幀（只經閘道，桌面端不直接連券商）",
+          wait_until(qt, lambda: stream.frames)
+          and stream.frames[0] == {"action": "subscribe", "codes": ["HK.HSImain"], "ktype": "1m",
+                                   "count": 1000, "broker": "futu"}, json.dumps(stream.frames[:1]))
+    pane = gui.panes["KlineStreamPage"]
+    check("訂閱成功即說明會自動結束的秒數",
+          wait_until(qt, lambda: "已訂閱 futu HK.HSImain 1m" in gui.kline_stream.messageLabel.text())
+          and "秒後自動結束" in gui.kline_stream.messageLabel.text(), gui.kline_stream.messageLabel.text())
+    check("訂閱期間「訂閱」不可再按（同一券商同時只容許一條串流，第二條會被以 stream_busy 拒絕）",
+          not gui.kline_stream.startButton.isEnabled() and gui.kline_stream.stopButton.isEnabled(),
+          f"start={gui.kline_stream.startButton.isEnabled()} stop={gui.kline_stream.stopButton.isEnabled()}")
+    check("收到的 update 經序列合併：同 ts 覆蓋、其餘保留（已取的歷史不會被縮返最近幾根）",
+          wait_until(qt, lambda: pane.store.size == 5), f"{pane.store.size} 根")
+    merged = pane.store.payload()
+    check("合併後為 ts 升序的完整序列，同 ts 者以新到者為準",
+          [row[1] for row in merged["rows"]] == [K_BASE + i * 60 for i in range(5)]
+          and [row[6] for row in merged["rows"]][2:] == [9999.0] * 3, json.dumps(merged["rows"][2:]))
+    check("串流更新後表格仍按時間反序，最新一根在首行",
+          cell(gui.kline_stream.klineTable, 0, 1) == str(K_BASE + 4 * 60)
+          and cell(gui.kline_stream.klineTable, 0, 6) == "9999.0",
+          cell(gui.kline_stream.klineTable, 0, 1))
+    check("更新訊息點名本次與合併後的根數",
+          "已更新 HK.HSImain" in gui.kline_stream.messageLabel.text()
+          and "本次 3 根" in gui.kline_stream.messageLabel.text()
+          and "合併後 5 根" in gui.kline_stream.messageLabel.text(), gui.kline_stream.messageLabel.text())
+    gui.kline_stream.stopButton.click()
+    check("按「停止」即送 stop 幀、說明已停止並解鎖按鈕（換參數要重連，故不能留在鎖定狀態）",
+          wait_until(qt, lambda: "已停止 futu 串流" in gui.kline_stream.messageLabel.text())
+          and any(f.get("action") == "stop" for f in stream.frames)
+          and gui.kline_stream.startButton.isEnabled() and not gui.kline_stream.stopButton.isEnabled(),
+          gui.kline_stream.messageLabel.text())
+    gui.client.base_url = real_base
+    stream.server.close()
+
+    # --------------------------------------------------------------------- K 線圖
+    Stub.queries.clear()
+    gui.window.tabs.setCurrentWidget(gui.kline_chart)
+    pump(qt, gui)
+    check("進入 K 線圖頁即惰性建立渲染視圖（無顯示環境下起不來即說明原因，而不是留一塊空白）",
+          gui._chart is not None,
+          type(gui._chart).__name__ if gui._chart else "未建立")
+    Stub.queries.clear()
+    gui.kline_chart.loadButton.click()
+    check("K 線圖頁的「取歷史」與拉取頁同一接口（不另寫一條取數路徑）",
+          wait_until(qt, lambda: Stub.queries) and Stub.queries[0].startswith("/kline?") and pump(qt, gui),
+          ",".join(Stub.queries))
+    check("圖表起不來時下方的 DF 照常填充並按時間反序（功能沒有半途而廢）",
+          gui.kline_chart.klineTable.rowCount() == 4
+          and cell(gui.kline_chart.klineTable, 0, 1) == str(K_BASE + 3 * 60),
+          f"{gui.kline_chart.klineTable.rowCount()} 行")
+    js = chart.render_js(chart.frame(gui.panes["KlineChartPage"].store.payload()), ktype="1m")
+    check("桌面端只交一份 DataFrame 給那份共用的 chart.js（座標軸與 series 全由它決定，這裡不另寫一套）",
+          js.startswith('BrokeryChart.render(document.getElementById("chart")')
+          and json.dumps(list(K_COLUMNS)) in js and '"ktype": "1m"' in js, js[:100])
+    check("起不來時以明確原因提示",
+          not gui._chart.error or gui.kline_chart.chartNoteLabel.text().startswith("無圖表："),
+          gui.kline_chart.chartNoteLabel.text()[:80])
+
+    # ----------------------------------------------------------------- BROKER 管理
+    Stub.queries.clear()
+    gui.window.tabs.setCurrentWidget(gui.brokers)
+    pump(qt, gui)
+    check("進入 BROKER 管理頁即讀開關狀態", Stub.queries == ["/brokers/prefs"], ",".join(Stub.queries))
+    check("開關列出全部可用券商（含未配置者，否則被停用者會從頁面上消失、無法再啟用）",
+          sorted(gui._pref_boxes) == ["futu", "ib", "tiger", "webull"], ",".join(sorted(gui._pref_boxes)))
+    check("已生效者可勾選，未配置者不可勾選（那不是開關能改的事）",
+          gui._pref_boxes["futu"].isChecked() and gui._pref_boxes["ib"].isChecked()
+          and not gui._pref_boxes["tiger"].isChecked()
+          and not gui._pref_boxes["tiger"].isEnabled() and not gui._pref_boxes["webull"].isEnabled(),
+          "；".join(f"{n}={b.isChecked()}/{b.isEnabled()}" for n, b in gui._pref_boxes.items()))
+    details = "；".join(label.text() for label in gui.brokers.findChildren(QtWidgets.QLabel))
+    check("不可勾選的原因原樣顯示在同一行（由接口給，不是界面自己編）", "API_SOURCES" in details, details[:80])
+    check("統計生效的家數", gui.brokers.summaryLabel.text() == "生效 2 家", gui.brokers.summaryLabel.text())
+
+    Stub.queries.clear()
+    gui._pref_boxes["ib"].setChecked(False)
+    gui.brokers.applyButton.click()
+    check("「應用」一次交齊完整生效名單（不是只交改動的那一個開關）",
+          wait_until(qt, lambda: Stub.queries) and Stub.queries[0] == "/brokers/prefs/update?enabled=futu"
+          and pump(qt, gui), ",".join(Stub.queries))
+    check("寫入成功的回應即最新狀態：開關即時重畫，不需再讀一次",
+          not gui._pref_boxes["ib"].isChecked() and gui._pref_boxes["ib"].isEnabled()
+          and gui.brokers.summaryLabel.text() == "生效 1 家", gui.brokers.summaryLabel.text())
+    check("開關一改即重讀能力聲明：被停用者即時從各頁的券商下拉框消失",
+          all(combo_values(p.brokerCombo) == ["futu"] for p in kline_pages)
+          and combo_items(gui.symbols.brokerCombo) == ["futu|可選"],
+          "；".join(",".join(combo_values(p.brokerCombo)) for p in kline_pages))
+
+    for language, titles, kind0 in (("zh-Hans", TAB_TITLES["zh-Hans"], "股票"),
+                                   ("en", TAB_TITLES["en"], "Stocks")):
         gui.set_language(language)
         qt.processEvents()
-        check(f"切換語言即時生效（{language}）且不需重建窗口",
-              gui.window.tabs.tabText(0) == tab0 and gui.symbols.kindCombo.itemText(0) == kind0
-              and id(gui.window) == window_id, gui.window.tabs.tabText(0))
+        check(f"切換語言即時生效（{language}）：六個分頁標題全部重貼且不需重建窗口",
+              tuple(gui.window.tabs.tabText(i) for i in range(6)) == titles
+              and gui.symbols.kindCombo.itemText(0) == kind0
+              and gui.kline_pull.codeLabel.text() == {
+                  "zh-Hans": "代码", "en": "Code"}[language]
+              and id(gui.window) == window_id,
+              "；".join(gui.window.tabs.tabText(i) for i in range(gui.window.tabs.count())))
     check("切換語言後快照一行一併重貼（重貼標籤即重繪快照狀態，不需重新取數）",
           gui.symbols.codesLabel.text().startswith("ib offline CODES"), gui.symbols.codesLabel.text())
     check("界面用到的鍵在三種語言下均無缺譯", gui.tr.missing == [], ",".join(gui.tr.missing))
@@ -422,15 +712,17 @@ def main() -> dict:
     check("啟動腳本會保住窗口（不持有引用即窗口被解構、事件循環 abort）", alive, out.strip()[:120])
 
     for label, passed, detail in checks:
-        print(f"{'PASS' if passed else 'FAIL'} {label}（{detail}）")
+        print(f"{'PASS' if passed else 'FAIL'} {label}（{detail}）", flush=True)
     failed = [label for label, passed, _ in checks if not passed]
     if failed:
         return {"status": False, "data": None, "message": "失敗：" + "；".join(failed)}
     return {"status": True, "data": None,
-            "message": f"{len(checks)} 項檢查全過：.ui 不含文字、三種語言鍵集合一致且即時切換、表格欄位即欄位契約、"
-                       "缺失值破折號、券商選項由能力聲明填充、市場選項只由返回值填充、離線 CODES 按券商各一檔"
-                       "（讀取／更新兩個按鈕均只針對當前券商）、自動更新秒數預設 0 且 0 即不更新、"
-                       "閘道不可達與金鑰不正確均明確報錯"}
+            "message": f"{len(checks)} 項檢查全過：六頁 .ui 不含文字、三種語言鍵集合一致且六頁標題即時切換、"
+                       "表格欄位即欄位契約、缺失值破折號、券商選項由能力聲明填充、市場選項只由返回值填充、"
+                       "離線 CODES 按券商各一檔（讀取／更新兩個按鈕均只針對當前券商）、自動更新秒數預設 0 且 0 即不更新、"
+                       "三個 K 線頁預設 HK.HSImain/1m/1000 且取數只由按鈕觸發、DF 按時間反序而存放仍為升序、"
+                       "串流經 /stream 且 update 按 (code,ts) 合併不縮返、BROKER 開關寫入後各頁下拉框即時跟隨、"
+                       "圖表只交一份 DataFrame 給共用的 chart.js、閘道不可達與金鑰不正確均明確報錯"}
 
 
 if __name__ == "__main__":

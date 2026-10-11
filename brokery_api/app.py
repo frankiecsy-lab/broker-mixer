@@ -7,6 +7,9 @@
 
 連券商的取數接口一律受理 raw 查詢參數（?raw=1）：為真時 data 的欄位與值即該券商自帶的格式，信封與
 狀態口徑完全不變，故同一接口可同時供出統一格式與原始格式。
+
+券商開關喜好（broker_prefs.json）只由本模組讀寫：Brokery 只接受 disabled= 參數並在呼叫時統一拒絕被停用
+者，不讀寫任何檔案，因此三個界面共用同一份喜好而 core 仍可在離線腳本中直接構造。
 """
 from __future__ import annotations
 
@@ -25,7 +28,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Security, WebSocke
 from fastapi.responses import FileResponse
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
-from brokery import Brokery, CodeError, store
+from brokery import Brokery, CodeError, chart, prefs, store
 from brokery.brokers.base import (
     ACCOUNT_COLUMNS,
     BAR_MINUTES,
@@ -104,6 +107,11 @@ def envelope(result: dict) -> dict:
 def _split(value: str | None) -> tuple[str, ...]:
     """逗號分隔的查詢參數 → 名單（大寫為統一市場/種子名稱）。"""
     return tuple(item.strip().upper() for item in (value or "").split(",") if item.strip())
+
+
+def _names(value: str | None) -> tuple[str, ...]:
+    """逗號分隔的券商名稱 → 名單。不可經 _split：券商名稱是小寫標識（futu），大寫化即變成不存在的名字。"""
+    return tuple(item.strip().lower() for item in (value or "").split(",") if item.strip())
 
 
 def masked_query(request: Request) -> str:
@@ -196,7 +204,12 @@ def auto_refresh_codes(brokery: Brokery, logger) -> None:
     數秒，啟動時逐家拉會把啟動拖成十幾秒，其他券商的快照由界面上的「更新離線 CODES」按需拉。
     閘道可能在重拉完成前已關閉，屆時本次更新只是失敗並記進快照的 last_refresh_error，
     不影響已存放的舊快照。
+
+    該券商已在 BROKER 管理中停用時直接返回：被停用者不經過任何動作，啟動日誌也不該留一條無意義的
+    警告（重新啟用後下一次啟動照常自動更新）。
     """
+    if CODES_SOURCE not in brokery.sources():
+        return
     limit = codes_max_age_seconds()
     if limit <= 0:
         return
@@ -236,15 +249,22 @@ def create_app(sources: tuple[str, ...] | None = None, autype: str | None = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        """建立唯一的 Brokery 實例並全程複用：各適配器的連線為惰性，券商後端未啟動時仍能正常開機。"""
-        app.state.brokery = Brokery(sources=sources, autype=autype)
+        """建立唯一的 Brokery 實例並全程複用：各適配器的連線為惰性，券商後端未啟動時仍能正常開機。
+
+        生效集合由 .env 的 API_SOURCES 與 broker_prefs.json 共同決定：本處只讀檔並把被停用者交予
+        Brokery，之後的開關由 /brokers/prefs/update 即時套用，不需重建實例（重建會令 app.state.streams
+        中的舊適配器變成孤兒，連線也洩漏）。
+        """
+        disabled = prefs.load_disabled()
+        app.state.brokery = Brokery(sources=sources, autype=autype, disabled=disabled)
         logger.info(
-            "啟動：來源 %s，預設複權 %s，監聽 %s:%s，日誌 %s",
-            ", ".join(sources) or "無", autype, settings.api_host, settings.api_port,
+            "啟動：來源 %s（已停用 %s），預設複權 %s，監聽 %s:%s，日誌 %s",
+            ", ".join(app.state.brokery.sources()) or "無",
+            ", ".join(sorted(disabled)) or "無", autype, settings.api_host, settings.api_port,
             settings.api_log_dir / api_log.LOG_FILE,
         )
         # 快照過舊才在背景重拉：不阻塞啟動，也不放進任何請求的路徑（見 auto_refresh_codes）
-        if CODES_SOURCE in sources:
+        if CODES_SOURCE in app.state.brokery.sources():
             threading.Thread(target=auto_refresh_codes, args=(app.state.brokery, logger),
                              name="codes-refresh", daemon=True).start()
         yield
@@ -316,13 +336,24 @@ def create_app(sources: tuple[str, ...] | None = None, autype: str | None = None
         """網頁控制台。頁面本身不含資料，資料仍由帶金鑰的接口取得，故不需鑑權。"""
         return FileResponse(UI_FILE)
 
+    @app.get("/static/{name}", include_in_schema=False)
+    def static_asset(name: str) -> FileResponse:
+        """界面共用的靜態資源（chart.js 與 echarts.min.js）：圖表規格只有一份，三個界面載入同一份，
+        嚴禁各自複製。與控制台頁面一樣不需鑑權，路徑由 brokery.chart.static_dir() 決定。"""
+        try:
+            path = chart.static_file(name)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"static_missing: {name}")
+        return FileResponse(path)
+
     @app.get("/health")
     def health() -> dict:
-        """存活檢查：不需金鑰，只回報配置，不取任何券商資料。"""
+        """存活檢查：不需金鑰，只回報配置，不取任何券商資料。sources 為生效集合（已扣除被停用者）。"""
         return {
             "status": True,
             "data": {
-                "sources": list(sources),
+                "sources": app.state.brokery.sources(),
+                "prefs_file": str(prefs.prefs_path()),
                 "autype": autype,
                 "log_file": str(settings.api_log_dir / api_log.LOG_FILE),
                 "stream_seconds": settings.api_stream_seconds,
@@ -368,6 +399,27 @@ def create_app(sources: tuple[str, ...] | None = None, autype: str | None = None
         """各券商的連線狀態與探測延遲，欄位固定為 BROKER_COLUMNS。以一次戶口查詢探測（只需連線與
         鑑權，不需要行情權限），各家並行，連不上者 connected=False、latency_ms 為 null。"""
         return guarded("/brokers", lambda: app.state.brokery.get_brokers(broker=broker))
+
+    @app.get("/brokers/prefs", dependencies=[auth])
+    def brokers_prefs() -> dict:
+        """券商開關喜好（全域，三界面共用）：欄位為 core.PREF_COLUMNS，一律列出全部可用券商而不只係
+        生效者，否則被停用者喺頁面上消失、無法重新啟用。只讀檔與讀內建狀態，不取任何券商資料。"""
+        return guarded("/brokers/prefs", lambda: app.state.brokery.get_broker_prefs())
+
+    @app.get("/brokers/prefs/update", dependencies=[auth])
+    def brokers_prefs_update(enabled: str | None = None) -> dict:
+        """設定生效的券商並寫檔：enabled 為逗號分隔的完整生效名單（省略即全部停用，與界面取消全部
+        開關一致）。即時生效，不需重建 Brokery；返回與 /brokers/prefs 同樣的清單，界面一次呼叫即重畫。
+        名稱不在可用券商內時明確報錯且不改變任何狀態。"""
+        names = _names(enabled)
+
+        def apply() -> dict:
+            result = app.state.brokery.set_broker_enabled(names)
+            if result["status"]:  # 失敗時 core 已不改狀態，檔也不該跟着變
+                prefs.save_disabled([name for name in sources if name not in names])
+            return result
+
+        return guarded("/brokers/prefs/update", apply)
 
     @app.get("/logs", dependencies=[auth])
     def logs(limit: int = 200) -> dict:

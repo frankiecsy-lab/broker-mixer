@@ -48,6 +48,20 @@ K_COLUMNS = [
     "source",
 ]
 
+# 統一疊加指標欄位。指標（如 ICT 的 order block、供需區、FVG、均線）由 pandas 計算，輸出即這些
+# 行，與 K 線同樣以 ts（UTC 秒）對齊；渲染層只把行變成圖形，不含任何指標算法。start_ts/end_ts
+# 必須是 K 線的 ts，否則對不準 bar。side 只表示方向（bull/bear/空字串），顏色由渲染層決定。
+OVERLAY_COLUMNS = [
+    "code",
+    "kind",
+    "name",
+    "start_ts",
+    "end_ts",
+    "start_price",
+    "end_price",
+    "side",
+]
+
 # 統一戶口欄位。只以 acc_type 區分戶口性質（cash/margin）；不再區分戶口環境（real/simulate），
 # 各適配器一律只返回真實戶口（IB 的真實與模擬由所連 Gateway 決定，本身沒有這個維度；富途與
 # Tiger 的模擬戶口因此不列入）。金額一律以 currency 所示幣種計，各券商以其原生匯總幣種為準，

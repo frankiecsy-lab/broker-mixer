@@ -5,7 +5,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>brokery api 控制台</title>
-<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<!-- 圖表規格只有一份：由閘道的 /static 載入本地副本（無 CDN，離線與 Docker 都畫到圖） -->
+<script src="/static/echarts.min.js"></script>
+<script src="/static/chart.js"></script>
 <style>
   :root { --bg:#12161c; --panel:#1a2028; --line:#2b3441; --fg:#dfe6ef; --dim:#8a97a8;
           --up:#e0524a; --down:#2ea36f; --accent:#4b9ece; }
@@ -75,9 +77,9 @@
 <main>
 <section id="tab-kline" class="active">
   <div class="bar">
-    <div><label>代碼</label><input id="k-code" value="HK.00700" size="14"></div>
+    <div><label>代碼</label><input id="k-code" value="HK.HSImain" size="14"></div>
     <div><label>週期</label><select id="k-ktype"></select></div>
-    <div><label>根數</label><input id="k-count" type="number" value="120" min="1" max="1000" style="width:80px"></div>
+    <div><label>根數</label><input id="k-count" type="number" value="1000" min="1" max="1000" style="width:80px"></div>
     <div><label>來源</label><select id="k-broker"></select></div>
     <div><label>複權</label><select id="k-autype"><option value="">預設</option></select></div>
     <button id="k-load">取歷史</button>
@@ -144,7 +146,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { key: localStorage.getItem('gw_key') || '', caps: null, cols: [], rows: [], list: '', listUrl: '', chart: null, ws: null };
+const state = { key: localStorage.getItem('gw_key') || '', caps: null, cols: [], rows: [], list: '', listUrl: '', ws: null };
 $('key').value = state.key;
 
 function setStatus(ok, text) {
@@ -244,35 +246,30 @@ const cell = (v) => `<td>${v === null || v === undefined ? '' : v}</td>`;
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 // ---------- K 線 ----------
-function chartPayload(payload) {
-  const at = (name) => payload.columns.indexOf(name);
-  const i = { ts: at('ts'), o: at('open'), h: at('high'), l: at('low'), c: at('close'), v: at('volume') };
-  if (Object.values(i).includes(-1)) return null;
-  return payload.rows.map((r) => ({
-    time: new Date(r[i.ts] * 1000).toLocaleString('zh-HK', { hour12: false }),
-    candle: [r[i.o], r[i.c], r[i.l], r[i.h]], vol: r[i.v], up: r[i.c] >= r[i.o],
-  }));
+// 圖表與表格一律交共用規格 brokery/static/chart.js：呢度只攞數同餵數，唔再自己拼 ECharts option。
+// 拉取與串流嘅序列經同一個 store 合併（key=(code,ts)，同 ts 覆蓋，保留最新 1000 根），所以一條只帶
+// 最近 count 根的 update 唔會把已拉取嘅 1000 根歷史縮返 60 根。
+const kline = { store: window.BrokeryChart ? BrokeryChart.store(1000) : null, key: '' };
+
+// 換標的或換週期即換咗一個序列：唔清走舊 bar 會喺同一條軸上混埋兩份唔同週期嘅資料。
+const klineKey = () => `${$('k-code').value.trim()}|${$('k-ktype').value}`;
+
+function paintKline() {
+  if (!kline.store) { $('chart').innerHTML = '<div class="msg">無圖表（未能載入 chart.js）</div>'; return; }
+  const payload = kline.store.payload();
+  if (!payload.rows.length || !window.echarts) {
+    $('chart').innerHTML = '<div class="msg">無圖表（未能載入 ECharts，或返回不含 OHLC）</div>';
+  } else {
+    BrokeryChart.render($('chart'), payload, null, { ktype: $('k-ktype').value });
+  }
+  renderTable($('k-table'), BrokeryChart.desc(payload), 30);   // 按時間反序：最新在最上
 }
 
-function drawChart(payload) {
-  const bars = chartPayload(payload);
-  if (!bars || !window.echarts) { $('chart').innerHTML = '<div class="msg">無圖表（未能載入 ECharts，或返回不含 OHLC）</div>'; return; }
-  state.chart = state.chart || echarts.init($('chart'));
-  state.chart.setOption({
-    backgroundColor: 'transparent', animation: false,
-    tooltip: { trigger: 'axis' }, axisPointer: { type: 'cross' },
-    grid: [{ left: 62, right: 16, top: 16, height: '62%' }, { left: 62, right: 16, top: '76%', height: '18%' }],
-    xAxis: [{ type: 'category', data: bars.map((b) => b.time), axisLabel: { color: '#8a97a8' } },
-            { type: 'category', gridIndex: 1, data: bars.map((b) => b.time), axisLabel: { show: false } }],
-    yAxis: [{ scale: true, axisLabel: { color: '#8a97a8' } }, { gridIndex: 1, axisLabel: { show: false } }],
-    dataZoom: [{ type: 'inside', xAxisIndex: [0, 1], start: 60, end: 100 }],
-    series: [
-      { name: 'K 線', type: 'candlestick', data: bars.map((b) => b.candle),
-        itemStyle: { color: '#e0524a', color0: '#2ea36f', borderColor: '#e0524a', borderColor0: '#2ea36f' } },
-      { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1,
-        data: bars.map((b) => ({ value: b.vol, itemStyle: { color: b.up ? '#e0524a' : '#2ea36f' } })) },
-    ],
-  });
+function mergeKline(payload) {
+  if (!kline.store) return;
+  if (kline.key !== klineKey()) { kline.store.clear(); kline.key = klineKey(); }
+  kline.store.add(payload);
+  paintKline();
 }
 
 async function loadKline() {
@@ -283,8 +280,7 @@ async function loadKline() {
   }));
   note('k-msg', body);
   if (!body.status) return;
-  drawChart(body.data);
-  renderTable($('k-table'), body.data, 30);
+  mergeKline(body.data);
 }
 
 // ---------- 串流 ----------
@@ -316,10 +312,9 @@ function startStream() {
   };
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
-    if (msg.event === 'update') {  // 每條 update 已是該代碼的完整序列，直接覆蓋，不做本地合併
-      drawChart(msg.data);
-      renderTable($('k-table'), msg.data, 30);
-      say(`已更新 ${msg.code}（${msg.data.rows.length} 根）`);
+    if (msg.event === 'update') {  // update 只帶最近 count 根：照樣經 store 合併，唔會蓋走已拉取嘅歷史
+      mergeKline(msg.data);
+      say(`已更新 ${msg.code}（本次 ${msg.data.rows.length} 根，合併後 ${kline.store ? kline.store.size : 0} 根）`);
     } else if (msg.event === 'subscribed') {
       say(`已訂閱 ${msg.broker} ${msg.codes.join(',')} ${msg.ktype}（${msg.seconds} 秒後自動結束）`);
     } else if (msg.event === 'end') {
@@ -517,7 +512,8 @@ async function connect() {
   // 離線 CODES 按券商各存一檔，故本頁的讀取／更新都以所選券商為準；預設選閘道的預設券商，
   // 與接口省略 broker 時的行為一致（能力聲明不含它時自然不會被選中）。
   $('c-broker').innerHTML = sources.map((s) => `<option value="${s}"${s === 'futu' ? ' selected' : ''}>${s}</option>`).join('');
-  $('k-ktype').innerHTML = caps.data.ktypes.map((k) => `<option value="${k}"${k === 'day' ? ' selected' : ''}>${k}</option>`).join('');
+  // 週期預設 1 分鐘（K 線頁的既定預設）；能力聲明冇 1m 時自然留返第一項，唔憑空揀一個冇嘅週期。
+  $('k-ktype').innerHTML = caps.data.ktypes.map((k) => `<option value="${k}"${k === '1m' ? ' selected' : ''}>${k}</option>`).join('');
   $('a-type').innerHTML = caps.data.acc_filters.map((t) => `<option value="${t}">${t}</option>`).join('');
   const autypes = [...new Set(Object.values(caps.data.adapters).flatMap((a) => a.autypes))];
   $('k-autype').innerHTML = '<option value="">預設</option>' + autypes.map((a) => `<option value="${a}">${a}</option>`).join('');
@@ -549,7 +545,6 @@ $('c-broker').addEventListener('change', () => { if (state.list === 'codes') loa
 // 改秒數後由現在重新計時；填 0 即停止自動更新。
 $('a-interval').addEventListener('input', () => { lastAuto.accounts = Date.now() / 1000; });
 $('c-interval').addEventListener('input', () => { lastAuto.codes = Date.now() / 1000; });
-window.addEventListener('resize', () => state.chart && state.chart.resize());
 setInterval(() => { if ($('l-auto').checked && document.querySelector('#tab-logs.active')) loadLogs(); }, 3000);
 
 // 自動更新以秒為單位，0 即不自動更新（預設）。只更新當前可見的分頁，且不在請求在途時觸發：

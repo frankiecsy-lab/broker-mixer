@@ -545,3 +545,44 @@
   `run_api.py` 自建 `apitest` 臨時快照並喺 `finally` 清理，以證兩檔互不覆蓋。
 - 語言檔三份鍵集合仍一致（現為 44 個，新增 `accounts.auto_interval`、`symbols.auto_interval`、`symbols.live_refresh`
   與 `symbols.codes_load*`）；`.ui` 檔仍不含任何文字。
+
+### 新增（全域券商開關與共用圖表層；四個 K 線頁面）
+- 券商開關喜好 `brokery/prefs.py`：`<data_dir>/broker_prefs.json`（`pathlib`，跨平台）**只記被停用嘅家**，
+  寫入為原子（`.tmp` → `os.replace`）；檔不存在或內容不可讀即全部生效，故唔需要遷移。只記差額而唔記全部名單，
+  係為免 `.env API_SOURCES` 一改之後檔即變舊。三個界面共用同一份檔。
+- `Brokery.__init__` 新增 `disabled=`（喜好由調用方讀檔後傳入，`core` 唔自己讀檔，故唔傳即照 `.env` 取齊全部，
+  逐家循環嘅驗收與離線分析不受界面開關影響）。生效集合 = `API_SOURCES` − `disabled`，被剔除者記喺 `_disabled`。新增 `get_broker_prefs()`（欄位 `PREF_COLUMNS`，
+  一律列出全部券商，未配置者 `configured=False`）與 `set_broker_enabled()`（即時套用到現有實例，唔使重建；
+  持久化由閘道負責）。
+- 失敗語義分清：`_source_error()` 對已停用者返回 `broker_disabled:`，根本唔喺 `API_SOURCES` 者仍為
+  `unknown_source:`，連不上者仍為該家嘅連線錯誤；全部停用時為 `no_source:` 並點名被停用者，唔再砌出
+  「已啟用的券商（）」呢種空列表。
+- **冇喺任何界面或調度處逐個加 if**：多券商路徑（`list_all`、`get_accounts(broker=None)`、`get_brokers()`）本來就
+  iterate 生效集合，`/capabilities` 亦只列生效適配器，所以被停用者自動唔會被任何動作經過，三個界面嘅券商下拉框
+  自動更新。
+- 閘道新增 `/brokers/prefs`（讀）與 `/brokers/prefs/update?enabled=`（寫，一次交齊完整名單，省略參數即全部停用；
+  名字原樣保留，唔經大寫化）；`/capabilities` 新增 `ktypes`（即 `BAR_MINUTES`）；`/health` 回報生效來源與喜好檔路徑；
+  `/static/{name}` 只放行白名單兩檔且唔需要金鑰；`auto_refresh_codes` 開頭先查 `CODES_SOURCE in brokery.sources()`。
+- 共用圖表層：`brokery/static/chart.js`（`window.BrokeryChart`：`option`／`render`／`store`／`overlays.register`／
+  `timeText`）+ 本地 vendor `echarts.min.js`（**取代 CDN**，GUI 與 Docker 離線照樣畫到圖）+ `chart_host.html`；
+  `brokery/chart.py` 為唯一 Python 入口（`payload`／`render_js`／`frame`／`overlay_rows`／`static_file`／`BarStore`）。
+  閘道 dashboard、Web UI 與桌面 GUI 載入嘅係同一個檔案，故任何指標喺三處完全一樣。
+- **疊加指標係資料唔係圖**：指標由 pandas 算出行，欄位即 `brokers/base.OVERLAY_COLUMNS`（`code/kind/name/
+  start_ts/end_ts/start_price/end_price/side`），渲染層只按 `kind` 分派（內置 `zone`／`line`），新指標只
+  `overlays.register(kind, fn)`。日後嘅自定義指標（例如 ICT order block）只寫運算同一個掛點，三處自動一致。
+- x 軸一律為原始 `ts`（UTC 秒），時間文字只由 formatter 產生——呢個係疊加指標能同 bar 對齊嘅前提。
+- 序列合併規則三處同一口徑（`chart.BarStore` 與 `chart.js` 嘅 `store()`）：key=(code,ts)、同 `ts` 以新到者覆蓋、
+  每個代碼只保留最新 N 根、內部一律升序。串流 `update` 只帶最近 `count` 根，直接取代會將 1000 根縮返最近幾根。
+  「最新喺最上」一律只屬顯示層（`rowsDesc()`／`desc()`），`core` 與圖表仍為升序，故跨券商對齊同指標計算唔受界面排序影響。
+- 桌面 GUI：`brokery_gui/stream.py`（`QWebSocket` 連 `/stream`，金鑰放 query string，因為 `QWebSocket` 唔可以設握手
+  header；只翻譯協定，不含業務）、`brokery_gui/chart_view.py`（惰性建立，起唔到即記 `webengine_missing:`／
+  `host_load_failed:`／`chart_js_missing:` 而唔係留空白）、四個新 `.ui`；六個分頁以 object name 辨認，唔再按 index 硬編碼。
+- **修復（GUI 背景取數會崩潰）**：PySide6 中連到普通可呼叫物件嘅信號會喺**發射**執行緒執行，而 `GatewayWorker.finished`
+  喺 worker `QThread` 發射，喺嗰度直接碰 `QWebEnginePage.runJavaScript` 即 `Windows fatal exception: code 0x80000003`。
+  改由一個屬主執行緒嘅 `ReplyRelay`（QObject）轉接，靠 Qt 嘅佇列連線交回 GUI 執行緒。
+- Web UI 新增 `/api/kline`、`/api/brokers/prefs`（讀寫）、`/static/chart.js` 與 `/static/echarts.min.js`（同一份檔）、
+  `WebSocket /ws/stream`（以 `websockets` 連上游，雙向原樣透傳；金鑰仍然只在服務端，唔落 browser）。
+- 驗收：新增 `run_broker_prefs.py`（18 項，存根適配器，唔使連線）與 `run_chart_spec.py`（17 項）；
+  `run_api.py` 62 → 80、`run_ui.py` 42 → 47、`run_gui.py` 52 → 84、`run_codes_refresh.py` 30 → 31（被停用者不做背景
+  自動更新）；`run_webui.py` 51 → 79（重寫時一度丟失戶口／標的／離線 CODES／自動更新嘅覆蓋，已照今日嘅契約補回）。
+- 語言檔三份鍵集合仍一致（44 → 73 個）；七個 `.ui` 檔仍不含任何文字。

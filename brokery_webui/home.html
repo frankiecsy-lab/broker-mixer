@@ -1,11 +1,14 @@
 <!DOCTYPE html>
-<!-- brokery_webui 主頁：上方為菜單（戶口清單、標的列表）。所有資料均由本應用的 /api/* 轉發閘道取得，
-     頁面不含任何金鑰，也不直接連接券商。 -->
+<!-- brokery_webui 主頁：上方為菜單（戶口清單、標的列表、K 線拉取、K 線串流、K 線圖、BROKER 管理）。
+     所有資料均由本應用的 /api/* 轉發閘道取得，串流由 /ws/stream 代理，頁面不含任何金鑰，也不直接連接券商。 -->
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>brokery Web UI</title>
+<!-- 圖表規格只有一份：由本應用的 /static 取 brokery/static/ 下的本地副本（無 CDN，離線與 Docker 都畫到圖） -->
+<script src="/static/echarts.min.js"></script>
+<script src="/static/chart.js"></script>
 <style>
   :root { --bg:#12161c; --panel:#1a2028; --line:#2b3441; --fg:#dfe6ef; --dim:#8a97a8;
           --up:#e0524a; --down:#2ea36f; --accent:#4b9ece; }
@@ -31,6 +34,15 @@
            font:inherit; padding:5px 8px; }
   input.num { width:64px; background:#0f1318; color:var(--fg); border:1px solid var(--line);
               border-radius:4px; font:inherit; padding:5px 6px; }
+  input.txt { width:132px; background:#0f1318; color:var(--fg); border:1px solid var(--line);
+              border-radius:4px; font:inherit; padding:5px 6px; }
+  .chart { width:100%; height:420px; }
+  /* 券商開關一行一家：未配置者（.env 未啟用）不可勾選，原因寫在同一行，不用按了才知道。 */
+  .switch { display:flex; gap:8px; align-items:center; padding:6px 0; border-bottom:1px solid var(--line); }
+  .switch b { font-weight:600; }
+  .switch i { color:var(--dim); font-style:normal; font-size:12px; }
+  .switch input:disabled + b { color:var(--dim); }
+  button.act:disabled { background:var(--line); border-color:var(--line); color:var(--dim); cursor:default; }
   .chip b { font-weight:600; } .chip i { color:var(--dim); font-style:normal; }
   .msg { color:var(--dim); margin:8px 0; }
   .msg.err { color:var(--up); }
@@ -55,6 +67,10 @@
 <nav id="menu">
   <button data-page="accounts" class="active">戶口清單</button>
   <button data-page="symbols">標的列表</button>
+  <button data-page="kline-pull">K 線拉取</button>
+  <button data-page="kline-stream">K 線串流</button>
+  <button data-page="kline-chart">K 線圖</button>
+  <button data-page="brokers">BROKER 管理</button>
 </nav>
 
 <main>
@@ -98,6 +114,68 @@
     </div>
     <div class="msg" id="s-msg"></div>
     <div class="panel"><div class="scroll" id="s-table"></div></div>
+  </section>
+
+  <!-- K 線三頁的預設值一律寫在控件上（標的 HK.HSImain、週期 1m、根數 1000）：換券商不會改變它，
+       且能力聲明讀取失敗時仍有可用的預設。週期選項其後由 /api/capabilities 補齊，保留 1m 為選中。
+       下方表格按時間反序（最新在最上）；這屬顯示層，取回的资料仍按時間升序。 -->
+  <section id="page-kline-pull">
+    <div class="bar">
+      <label>代碼<input type="text" id="kp-code" class="txt" value="HK.HSImain"></label>
+      <label>週期<select id="kp-ktype"><option value="1m" selected>1m</option></select></label>
+      <label>根數<input type="number" id="kp-count" class="num" min="1" max="1000" value="1000"></label>
+      <label>券商<select id="kp-broker"></select></label>
+      <button class="act" id="kp-load">取得</button>
+      <span id="kp-sources"></span>
+    </div>
+    <div class="msg" id="kp-msg"></div>
+    <div class="panel"><div class="scroll" id="kp-table"></div></div>
+  </section>
+
+  <!-- 串流經本應用的 /ws/stream 代理連閘道：金鑰只在服務端。每條 update 帶的是該代碼目前完整的 bar，
+       一律經合併規則處理（同時間覆蓋、保留最新 N 根），故不會把已取得的歷史縮返最近幾十根。 -->
+  <section id="page-kline-stream">
+    <div class="bar">
+      <label>代碼<input type="text" id="ks-code" class="txt" value="HK.HSImain"></label>
+      <label>週期<select id="ks-ktype"><option value="1m" selected>1m</option></select></label>
+      <label>根數<input type="number" id="ks-count" class="num" min="1" max="1000" value="1000"></label>
+      <label>券商<select id="ks-broker"></select></label>
+      <button class="act" id="ks-start">訂閱</button>
+      <button class="act" id="ks-stop" disabled>停止</button>
+      <span id="ks-sources"></span>
+    </div>
+    <div class="msg" id="ks-msg"></div>
+    <div class="panel"><div class="scroll" id="ks-table"></div></div>
+  </section>
+
+  <section id="page-kline-chart">
+    <div class="bar">
+      <label>代碼<input type="text" id="kg-code" class="txt" value="HK.HSImain"></label>
+      <label>週期<select id="kg-ktype"><option value="1m" selected>1m</option></select></label>
+      <label>根數<input type="number" id="kg-count" class="num" min="1" max="1000" value="1000"></label>
+      <label>券商<select id="kg-broker"></select></label>
+      <button class="act" id="kg-load">取歷史</button>
+      <button class="act" id="kg-start">訂閱實時</button>
+      <button class="act" id="kg-stop" disabled>停止訂閱</button>
+      <span id="kg-sources"></span>
+    </div>
+    <div class="msg" id="kg-msg"></div>
+    <div class="panel">
+      <div class="chart" id="kg-chart"></div>
+      <div class="scroll" id="kg-table"></div>
+    </div>
+  </section>
+
+  <!-- 券商開關是全域喜好（存放在閘道端一個 JSON 檔，三個界面共用同一份）：被停用者不會被任何動作經過，
+       各頁面的券商下拉框亦即時不再列出。本頁只讀寫該檔，不向任何券商取數；未配置者（.env 未啟用）不可勾選。 -->
+  <section id="page-brokers">
+    <div class="bar">
+      <button class="act" id="b-apply">套用</button>
+      <button class="act" id="b-reload">重新讀取</button>
+      <span class="msg">開關為全域設定，套用後即時生效，不需重新啟動。</span>
+    </div>
+    <div class="msg" id="b-msg"></div>
+    <div class="panel" id="b-list"></div>
   </section>
 </main>
 
@@ -148,6 +226,16 @@ function renderCounts(el, data, unit) {
 
 let inFlight = 0;   // 進行中的請求數：定時更新只在沒有在途請求時觸發，避免慢請求疊加
 
+// 進行中即把按鈕停用：取 1000 根 K 線需數秒，期間重覆送出只會疊加同一個請求。
+async function withBusy(btn, fn) {
+  btn.disabled = true;
+  try {
+    return await fn();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function loadInto(msgEl, tableEl, countEl, unit, url, busy) {
   inFlight++;
   try {
@@ -189,31 +277,54 @@ const KIND_LABEL = { stock: '股票', future: '期貨', index: '指數' };
 // 能力聲明以 symbol_type 的大寫常量表達（見 brokers/codes.py），與選項值大小寫不同，必須顯式對應。
 const KIND_CAPABILITY = { stock: 'STOCK', future: 'FUTURE', index: 'INDEX' };
 let brokerCaps = {};              // 券商 → 其聲明的品種；由 /api/capabilities 取得，頁面不硬寫券商名單
+let ktypes = [];                  // 閘道可用的 K 線週期：同樣只由能力聲明決定，不憑空列舉
 const seenMarkets = new Set();    // 只列實際返回過的市場，不憑空給出選項
+// 券商下拉框只有一處填充：/api/capabilities 只返回生效的券商，所以在 BROKER 管理停用一家後，
+// 所有頁面的選項都會一併少一家，不需要逐頁處理。
+const BROKER_SELECTS = ['s-broker', 'kp-broker', 'ks-broker', 'kg-broker'];
+const KTYPE_SELECTS = ['kp-ktype', 'ks-ktype', 'kg-ktype'];
 
-async function loadBrokers() {
-  if (Object.keys(brokerCaps).length) return;
-  try {
-    const body = await (await fetch('/api/capabilities')).json();
-    if (!body.status) { setMsg($('s-msg'), body.message, 'err'); return; }
-    brokerCaps = body.data.adapters || {};
-  } catch (err) {
-    setMsg($('s-msg'), `讀取券商能力失敗：${err}`, 'err');
-    return;
+async function loadBrokers(force) {
+  if (!Object.keys(brokerCaps).length || force) {
+    try {
+      const body = await (await fetch('/api/capabilities')).json();
+      if (!body.status) { setMsg($('s-msg'), body.message, 'err'); return; }
+      brokerCaps = body.data.adapters || {};
+      ktypes = body.data.ktypes || [];
+    } catch (err) {
+      setMsg($('s-msg'), `讀取券商能力失敗：${err}`, 'err');
+      return;
+    }
   }
   renderBrokers();
+  renderKtypes();
 }
 
 // 券商選項按各家的能力聲明標註：不提供所選品種的選項設為不可選，原因在選項上寫明，
-// 而不是讓用戶按了才知道會報 type_unsupported。
+// 而不是讓用戶按了才知道會報 type_unsupported。原本選中嘅一家若已喺 BROKER 管理中被停用，
+// 自動改回 futu；futu 不可用時改返回列表第一家，絕不留空。
 function renderBrokers() {
   const kind = $('s-kind').value;
-  const current = $('s-broker').value;
-  $('s-broker').innerHTML = Object.entries(brokerCaps).map(([name, caps]) => {
-    const supported = (caps.capabilities || []).includes(KIND_CAPABILITY[kind]);
-    const label = supported ? name : `${name}（不提供${KIND_LABEL[kind]}）`;
-    return `<option value="${esc(name)}"${supported ? '' : ' disabled'}${name === (current || 'futu') ? ' selected' : ''}>${esc(label)}</option>`;
-  }).join('');
+  const names = Object.keys(brokerCaps);
+  for (const id of BROKER_SELECTS) {
+    const el = $(id);
+    const preferred = names.includes(el.value) ? el.value : (names.includes('futu') ? 'futu' : names[0]);
+    el.innerHTML = names.map((name) => {
+      const supported = id !== 's-broker' || (brokerCaps[name].capabilities || []).includes(KIND_CAPABILITY[kind]);
+      const label = supported ? name : `${name}（不提供${KIND_LABEL[kind]}）`;
+      return `<option value="${esc(name)}"${supported ? '' : ' disabled'}${name === preferred ? ' selected' : ''}>${esc(label)}</option>`;
+    }).join('');
+  }
+}
+
+// 週期選項由閘道的清單填；頁面已預填 1m（見各 section），故能力聲明讀取失敗時仍然可用。
+function renderKtypes() {
+  for (const id of KTYPE_SELECTS) {
+    const el = $(id);
+    const names = ktypes.length ? ktypes : [el.value || '1m'];
+    const preferred = names.includes(el.value) ? el.value : (names.includes('1m') ? '1m' : names[0]);
+    el.innerHTML = names.map((name) => `<option value="${esc(name)}"${name === preferred ? ' selected' : ''}>${esc(name)}</option>`).join('');
+  }
 }
 
 function renderMarkets() {
@@ -294,6 +405,154 @@ async function refreshCodes() {
   }
 }
 
+// ---------- K 線（拉取／串流／圖表三頁同一流程，只有控件前綴與是否畫圖不同）----------
+// 圖表與表格一律交共用規格 brokery/static/chart.js：呢度只攞數同餵數，唔再自己拼 ECharts option。
+// 每頁的序列經同一個 store 合併（key=(代碼,時間)，同時間覆蓋，保留最新 1000 根），所以一條只帶最近
+// count 根的 update 唔會把已拉取的 1000 根歷史縮返最近幾十根。
+const K_TABLE_ROWS = 30;   // 只顯示最新 30 行：1000 根全放進 DOM 會令頁面卡住
+
+function klinePane(prefix, options) {
+  const el = (suffix) => $(`${prefix}-${suffix}`);
+  const pane = { store: window.BrokeryChart ? BrokeryChart.store(1000) : null, key: '', ws: null };
+  const controls = () => ({ code: el('code').value.trim(), ktype: el('ktype').value,
+                            count: Number(el('count').value) || 1000, broker: el('broker').value });
+
+  pane.say = (text, ok) => {
+    setStatus(ok === false ? '取數失敗' : '已連接閘道', ok !== false);
+    setMsg(el('msg'), text, ok === false ? 'err' : '');
+  };
+
+  pane.paint = () => {
+    const payload = pane.store ? pane.store.payload() : { columns: [], rows: [] };
+    if (options.chart) {
+      if (!window.echarts || !payload.rows.length) {
+        el('chart').innerHTML = '<div class="msg">無圖表（未能載入 ECharts，或返回不含 OHLC）</div>';
+      } else {
+        BrokeryChart.render(el('chart'), payload, null, { ktype: controls().ktype });
+      }
+    }
+    // 按時間反序（最新在最上）屬顯示層：store 內部與取回的资料仍按時間升序，圖表與跨券商對齊靠升序。
+    const reversed = BrokeryChart.desc(payload);
+    renderTable(el('table'), { columns: reversed.columns, rows: reversed.rows.slice(0, K_TABLE_ROWS) });
+    renderCounts(el('sources'), reversed, '根');
+  };
+
+  pane.merge = (payload) => {
+    if (!pane.store) return;
+    // 換標的或換週期即換咗一個序列：唔清走舊 bar 會喺同一條軸上混埋兩份唔同週期的資料。
+    const key = `${controls().code}|${controls().ktype}`;
+    if (pane.key !== key) { pane.store.clear(); pane.key = key; }
+    pane.store.add(payload);
+    pane.paint();
+  };
+
+  pane.pull = async () => {
+    const c = controls();
+    const params = new URLSearchParams({ code: c.code, ktype: c.ktype, count: c.count, broker: c.broker });
+    setMsg(el('msg'), `向 ${c.broker} 取 ${c.code} 的 ${c.ktype} K 線（${c.count} 根）…`, 'busy');
+    let body;
+    try {
+      body = await (await fetch(`/api/kline?${params}`)).json();
+    } catch (err) {
+      setStatus('閘道不可達', false);
+      setMsg(el('msg'), `請求失敗：${err}`, 'err');
+      return;
+    }
+    if (!body.status) { setStatus('取數失敗', false); setMsg(el('msg'), body.message, 'err'); return; }
+    setStatus('已連接閘道', true);
+    setMsg(el('msg'), body.message);
+    pane.merge(body.data);
+  };
+
+  if (options.stream) {
+    // 串流一律經本應用的 /ws/stream 代理：金鑰只在服務端，放進頁面即等於公開。協定（subscribed/
+    // update/end…）與每券商名額一律由閘道判定，呢邊只按事件顯示與合併，不改內容。
+    pane.idle = () => { pane.ws = null; el('start').disabled = false; el('stop').disabled = true; };
+    pane.start = () => {
+      if (pane.ws) return;
+      const c = controls();
+      const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/stream`);
+      ws.onopen = () => ws.send(JSON.stringify({ action: 'subscribe', codes: [c.code], ktype: c.ktype,
+                                                 count: c.count, broker: c.broker }));
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.event === 'update') {   // update 只帶最近 count 根：照樣經 store 合併，唔會蓋走已拉取嘅歷史
+          pane.merge(msg.data);
+          pane.say(`已更新 ${msg.code}（本次 ${msg.data.rows.length} 根，合併後 ${pane.store ? pane.store.size : 0} 根）`);
+        } else if (msg.event === 'subscribed') {
+          pane.say(`已訂閱 ${msg.broker} ${msg.codes.join(',')} ${msg.ktype}（${msg.seconds} 秒後自動結束）`);
+        } else if (msg.event === 'end' || msg.event === 'closed') {
+          pane.say(msg.message || `已停止 ${msg.broker} 串流`);
+          pane.idle();
+        } else {
+          pane.say(msg.message || msg.event, false);
+          // 同一券商同時只容許一條串流：名額要待上一條的執行緒結束才釋放，此時要解鎖按鈕讓用戶再試。
+          if (msg.event === 'error' && String(msg.message).startsWith('stream_busy')) pane.idle();
+        }
+      };
+      ws.onerror = () => pane.say('串流連線失敗：請確認閘道已啟動', false);
+      ws.onclose = () => { if (pane.ws === ws) pane.idle(); };
+      pane.ws = ws;
+      el('start').disabled = true;
+      el('stop').disabled = false;
+    };
+    pane.stop = () => {
+      if (!pane.ws) return;
+      pane.ws.send(JSON.stringify({ action: 'stop' }));
+      pane.ws.close();
+      pane.idle();
+    };
+  }
+  return pane;
+}
+
+const panes = {
+  'kline-pull': klinePane('kp', {}),
+  'kline-stream': klinePane('ks', { stream: true }),
+  'kline-chart': klinePane('kg', { chart: true, stream: true }),
+};
+
+// ---------- BROKER 管理 ----------
+// 開關是全域喜好（一個 JSON 檔，三個界面共用）：寫檔後 core 即時過濾，所以本頁寫完只要重畫開關與
+// 各頁的券商下拉框，不需重新啟動任何服務。未配置者（.env 未包含）一律不可勾選，原因照原樣顯示在同一行。
+async function loadPrefs() {
+  let body;
+  try {
+    body = await (await fetch('/api/brokers/prefs')).json();
+  } catch (err) {
+    setMsg($('b-msg'), `讀取券商開關失敗：${err}`, 'err');
+    return;
+  }
+  if (!body.status) { setStatus('取數失敗', false); setMsg($('b-msg'), body.message, 'err'); return; }
+  setStatus('已連接閘道', true);
+  renderPrefs(body.data);
+  setMsg($('b-msg'), body.message);
+}
+
+function renderPrefs(data) {
+  const cols = data.columns || [];
+  $('b-list').innerHTML = (data.rows || []).map((row) => {
+    const at = (name) => row[cols.indexOf(name)];
+    const name = at('source');
+    return `<label class="switch"><input type="checkbox" data-broker="${esc(name)}"${at('enabled') ? ' checked' : ''}${at('configured') ? '' : ' disabled'}>`
+      + `<b>${esc(name)}</b><i>${esc(at('detail') || '')}</i></label>`;
+  }).join('');
+}
+
+async function applyPrefs() {
+  const enabled = [...document.querySelectorAll('#b-list input[data-broker]:checked')]
+    .map((input) => input.dataset.broker);
+  const params = new URLSearchParams();
+  if (enabled.length) params.set('enabled', enabled.join(','));  // 全不勾即省略參數：與閘道「省略即全部停用」一致
+  const body = await withBusy($('b-apply'),
+                              () => fetch(`/api/brokers/prefs/update?${params}`).then((r) => r.json()));
+  if (!body.status) { setStatus('取數失敗', false); setMsg($('b-msg'), body.message, 'err'); return; }
+  setStatus('已連接閘道', true);
+  renderPrefs(body.data);   // 寫入成功的回應即最新狀態，不需再讀一次
+  setMsg($('b-msg'), body.message);
+  loadBrokers(true);        // 被停用者要即時從各頁的券商下拉框消失
+}
+
 function show(page) {
   document.querySelectorAll('#menu button').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
   document.querySelectorAll('main section').forEach((s) => s.classList.toggle('active', s.id === 'page-' + page));
@@ -301,11 +560,16 @@ function show(page) {
   if (page === 'accounts') loadAccounts();
   // 先取能力聲明，券商選項填好後才讀快照與清單：兩者都以所選券商為準。
   if (page === 'symbols') loadBrokers().then(() => { loadSymbols(); loadSnapshotMeta(); });
+  // K 線三頁只填控件（券商與週期選項），不自動取數：1000 根需數秒，由用戶按「取得」才向券商取數。
+  if (['kline-pull', 'kline-stream', 'kline-chart'].includes(page)) loadBrokers();
+  if (page === 'brokers') loadPrefs();
 }
 
 // 自動更新：秒數為 0 即不自動更新（預設）。只更新當前可見的頁面，且不在有請求在途時觸發。
 // 標的列表的定時更新預設只重讀離線快照（不打券商）；選上「自動向券商重拉」才定時向券商即時重取。
+// K 線三頁與 BROKER 管理沒有定時取數：串流由 WebSocket 推送，開關只在套用時寫檔。
 const lastAuto = { accounts: 0, symbols: 0 };
+const AUTO_INPUT = { accounts: 'a-interval', symbols: 's-interval' };
 
 function intervalSeconds(id) {
   return Math.max(0, Number($(id).value) || 0);
@@ -313,7 +577,8 @@ function intervalSeconds(id) {
 
 function tick() {
   const page = document.querySelector('#menu button.active').dataset.page;
-  const gap = intervalSeconds(page === 'accounts' ? 'a-interval' : 's-interval');
+  if (!AUTO_INPUT[page]) return;
+  const gap = intervalSeconds(AUTO_INPUT[page]);
   if (!gap || inFlight) return;
   const now = Date.now() / 1000;
   if (now - lastAuto[page] < gap) return;
@@ -343,6 +608,14 @@ $('s-broker').addEventListener('change', () => { loadSymbols(); loadSnapshotMeta
 // 改秒數後由現在重新計時；填 0 即停止自動更新。
 $('a-interval').addEventListener('input', () => { lastAuto.accounts = Date.now() / 1000; });
 $('s-interval').addEventListener('input', () => { lastAuto.symbols = Date.now() / 1000; });
+$('kp-load').addEventListener('click', () => withBusy($('kp-load'), panes['kline-pull'].pull));
+$('ks-start').addEventListener('click', panes['kline-stream'].start);
+$('ks-stop').addEventListener('click', panes['kline-stream'].stop);
+$('kg-load').addEventListener('click', () => withBusy($('kg-load'), panes['kline-chart'].pull));
+$('kg-start').addEventListener('click', panes['kline-chart'].start);
+$('kg-stop').addEventListener('click', panes['kline-chart'].stop);
+$('b-apply').addEventListener('click', applyPrefs);
+$('b-reload').addEventListener('click', loadPrefs);
 setInterval(tick, 1000);
 show('accounts');
 </script>

@@ -7,13 +7,16 @@
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import FastAPI
+import websockets
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.responses import FileResponse
 
+from brokery import chart
 from brokery.config import get_settings
 from brokery_api import log as api_log
 
@@ -26,6 +29,8 @@ UPSTREAM_TIMEOUT = 60.0
 # 頁面「類型」選項 → 閘道的清單接口。只有這三項，其餘一律 unknown_kind，不猜用戶想要什麼。
 SYMBOL_PATHS = {"stock": "/stocks", "future": "/futures", "index": "/indices"}
 DEFAULT_BROKER = "futu"
+# 一條 update 帶的是該代碼目前完整的 bar（最多 1000 根），遠超 websockets 預設的 1 MiB，故放宽上限。
+WS_MAX_SIZE = 8 * 2 ** 20
 
 
 def create_app(base_url: str | None = None, api_key: str | None = None) -> FastAPI:
@@ -47,6 +52,8 @@ def create_app(base_url: str | None = None, api_key: str | None = None) -> FastA
 
     app = FastAPI(title="brokery webui", description="量化交易 Web UI：頁面與閘道轉發，不直接連券商。")
     app.state.base_url = base_url
+    # 瀏覽器的 WebSocket 不能自訂握手標頭，金鑰只能放進查詢串；這條只用於連上游，不出現在頁面中。
+    ws_url = f"{base_url.replace('http', 'ws', 1)}/stream?api_key={api_key}"
 
     def forward(path: str, params: dict | None = None) -> dict:
         """轉發一個閘道接口：信封原樣透傳，取不到即明確返回 status=False。"""
@@ -116,5 +123,81 @@ def create_app(base_url: str | None = None, api_key: str | None = None) -> FastA
         """向某券商重拉全量 CODES 並覆蓋該券商的離線快照：轉發閘道 /codes/refresh。不带市場參數——
         快照本身就是全量，只拉部分市場會被閘道的縮細防護拒絕。"""
         return forward("/codes/refresh", {"broker": broker})
+
+    @app.get("/api/kline")
+    def kline(code: str, ktype: str | None = None, count: int | None = None,
+              broker: str = DEFAULT_BROKER, autype: str | None = None) -> dict:
+        """K 線：轉發閘道 /kline。週期與根數省略時一律交閘道用其預設，本層不自訂第二套預設；
+        代碼不支持該週期（ktype_unsupported）或被停用（broker_disabled）由 core 明確報錯。"""
+        params = {"code": code, "broker": broker}
+        for name, value in (("ktype", ktype), ("count", count), ("autype", autype)):
+            if value is not None:
+                params[name] = value
+        return forward("/kline", params)
+
+    @app.get("/api/brokers/prefs")
+    def brokers_prefs() -> dict:
+        """券商開關狀態：轉發閘道 /brokers/prefs（只讀，不取任何券商資料）。開關是全域喜好，故只此
+        一處寫檔，三個界面讀到的是同一份。"""
+        return forward("/brokers/prefs")
+
+    @app.get("/api/brokers/prefs/update")
+    def brokers_prefs_update(enabled: str | None = None) -> dict:
+        """設定生效的券商：轉發閘道 /brokers/prefs/update。enabled 原樣透傳（逗號分隔的完整名單，
+        不可在本層大寫化或裁剪，否則會變成不存在的名字）；省略即全部停用，與界面取消全部開關一致。"""
+        return forward("/brokers/prefs/update", {} if enabled is None else {"enabled": enabled})
+
+    @app.get("/static/{name}", include_in_schema=False)
+    def static_asset(name: str) -> FileResponse:
+        """圖表規格（chart.js 與 echarts.min.js）：與閘道同一份，由 brokery.chart.static_file() 定位，
+        嚴禁在 Web UI 另存一份。頁面本身不需鑑權，載入圖表規格亦不需。"""
+        try:
+            path = chart.static_file(name)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"static_missing: {name}")
+        return FileResponse(path)
+
+    @app.websocket("/ws/stream")
+    async def stream_proxy(ws: WebSocket) -> None:
+        """K 線串流的代理：瀏覽器 ↔ 本應用 ↔ 閘道，雙向原樣透傳，不改事件內容。
+
+        之所以要代理而不是讓頁面直連閘道：金鑰只在服務端，放進頁面即等於公開。協定（subscribe/
+        update/stop…）與每券商名額一律由閘道判定，本層只負責接兩條線，任何協定變更都不需要改這裡。
+        """
+        await ws.accept()
+        try:
+            upstream = await websockets.connect(ws_url, max_size=WS_MAX_SIZE)
+        except Exception as exc:  # 閘道未啟動或端口錯誤：以與 /api/* 同一口徑說明原因，不讓頁面空白等待
+            message = f"gateway_unreachable: {ws_url.split('?')[0]}（{type(exc).__name__}: {exc}）"
+            logger.warning("%s", message)
+            await ws.send_json({"event": "error", "message": message})
+            await ws.close()
+            return
+
+        async def to_client() -> None:
+            async for raw in upstream:
+                await ws.send_text(raw)
+
+        async def to_upstream() -> None:
+            while True:
+                await upstream.send(await ws.receive_text())
+
+        try:
+            tasks = [asyncio.create_task(to_client()), asyncio.create_task(to_upstream())]
+            _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            # 兩端都要取回：只取第一個異常的話，另一個會變成「Task exception was never retrieved」
+            # 混進日誌，與真正的故障分不清。頁面或上游斷開屬正常結束，不算錯誤。
+            errors = [exc for exc in await asyncio.gather(*tasks, return_exceptions=True)
+                      if isinstance(exc, Exception)]
+            if errors:
+                raise errors[0]  # 異常要留低痕跡，否則查不到斷開的原因
+        except Exception as exc:
+            logger.info("串流代理結束：%s", type(exc).__name__)
+        finally:
+            await upstream.close()
+            if ws.client_state.name != "DISCONNECTED":
+                await ws.close()
 
     return app

@@ -21,6 +21,10 @@ def main() -> int:
     except RuntimeError as exc:  # 未設 API_KEY
         print(f"無法啟動：{exc}", file=sys.stderr)
         return 1
+    try:  # QtWebEngine 必須在 QApplication 建立前匯入，否則 K 線圖分頁只会報 webengine_missing
+        import PySide6.QtWebEngineWidgets  # noqa: F401
+    except ImportError:
+        pass
     qt = QtWidgets.QApplication(sys.argv)
     gui = DesktopGui(client)  # 必須持有引用：頂層窗口無父，引用一沒即被解構（窗口不會顯示，背景執行緒亦會在運行中被拆）
     gui.show()

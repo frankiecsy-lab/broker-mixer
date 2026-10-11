@@ -2,8 +2,8 @@
 
 對外只有一個 class。所有方法一律返回 {"status": bool, "data": DataFrame, "message": str}，
 其中 data 的欄位固定為 brokers.base.COLUMNS（清單）、brokers.base.K_COLUMNS（K 線）、
-brokers.base.ACCOUNT_COLUMNS（戶口）或 brokers.base.BROKER_COLUMNS（連線狀態），code 一律為統一
-代碼（見 codes 模組）。
+brokers.base.ACCOUNT_COLUMNS（戶口）、brokers.base.BROKER_COLUMNS（連線狀態）或 core.PREF_COLUMNS
+（券商開關），code 一律為統一代碼（見 codes 模組）。
 
 各券商的能力並不對稱，由 capabilities 調度而非強行湊齊：股票、期貨與指數的批量清單均由
 富途按（市場, 證券類型）一次取全；IB 依種子展開所有到期月與交易所，並負責代碼轉換。某類
@@ -169,30 +169,49 @@ def _brokers_fail(message: str) -> dict:
     return {"status": False, "data": _brokers_frame([]), "message": message}
 
 
+# 統一券商開關欄位。enabled 即目前生效與否；configured=False 即 .env 的 API_SOURCES 未包含該家
+# （該家在本進程根本不存在，界面不可讓它被啟用）；detail 為不可啟用或不可取數的原因。
+PREF_COLUMNS = ["source", "enabled", "configured", "detail"]
+
+
+def _prefs_ok(rows: list[dict], message: str) -> dict:
+    return {"status": True, "data": pd.DataFrame(rows, columns=PREF_COLUMNS), "message": message}
+
+
+def _prefs_fail(message: str) -> dict:
+    return {"status": False, "data": pd.DataFrame([], columns=PREF_COLUMNS), "message": message}
+
+
 class Brokery:
     """以統一代碼格式取得標的清單與 K 線，並取得各券商的戶口與資金。"""
 
-    def __init__(self, sources: Iterable[str] = DEFAULT_SOURCES, autype: str = "qfq"):
+    def __init__(self, sources: Iterable[str] = DEFAULT_SOURCES, autype: str = "qfq", *,
+                 disabled: Iterable[str] = ()):
         """autype 為 K 線的預設複權模式（qfq/hfq/none），逐次呼叫可用 get_kline 的參數覆蓋。
 
         跨券商比價建議在這一處統一設為 none：各券商只支援自己聲明的模式，不支持的一律報錯。
+
+        disabled 為停用嘅券商（BROKER 管理頁寫入嘅喜好，由調用方讀檔後傳入，本層不讀檔）。適配器
+        照常建立，因此重新啟用唔使重建本物件、既有嘅串流連線唔會變成孤兒；但取數、清單與探測一律
+        唔經過被停用者，指定佢即返回 broker_disabled。生效集合即 sources 減 disabled。
         """
         names = tuple(sources)
         unknown = [name for name in names if name not in BROKERS]
         if unknown:
             raise CodeError(f"unknown_source: {', '.join(unknown)}；可用券商為 {', '.join(BROKERS)}")
         self._brokers: dict[str, SymbolBroker] = {name: BROKERS[name]() for name in names}
+        self._disabled: set[str] = {name for name in disabled if name in self._brokers}
         self.autype = autype
 
     # ---------- 生命週期 ----------
 
     def sources(self) -> list[str]:
-        """目前啟用的券商名稱。"""
-        return list(self._brokers)
+        """目前生效的券商名稱（已套用 BROKER 管理的停用開關）。"""
+        return [name for name in self._brokers if name not in self._disabled]
 
     def adapters(self) -> dict[str, SymbolBroker]:
-        """目前啟用的適配器實例（唯讀用途：供閘道查詢各券商的能力聲明，不應用它直接取數）。"""
-        return dict(self._brokers)
+        """目前生效的適配器實例（唯讀用途：供閘道查詢各券商的能力聲明，不應用它直接取數）。"""
+        return {name: broker for name, broker in self._brokers.items() if name not in self._disabled}
 
     def close(self) -> None:
         for broker in self._brokers.values():
@@ -204,13 +223,64 @@ class Brokery:
     def __exit__(self, *_exc) -> None:
         self.close()
 
+    # ---------- 生效券商（BROKER 管理的開關在此統一強制） ----------
+
+    def _adapter(self, source: str) -> SymbolBroker | None:
+        """生效時返回該券商的適配器；被停用或未配置時返回 None，原因由 _source_error 點名。"""
+        if source in self._disabled:
+            return None
+        return self._brokers.get(source)
+
+    def _source_error(self, source: str) -> str:
+        """被停用是用戶在 BROKER 管理中主動關掉的，與根本沒有這個來源要分清楚。"""
+        if source in self._disabled:
+            return f"broker_disabled: {source}（已在 BROKER 管理中停用）"
+        return f"unknown_source: {source}；已啟用 {', '.join(self.sources()) or '無'}"
+
+    def _no_source_message(self) -> str:
+        """沒有生效券商時點名被停用者，不砌出「已啟用的券商（）」這種空列表。"""
+        if self._disabled:
+            return (f"no_source: 已在 BROKER 管理中停用 {'、'.join(sorted(self._disabled))}，"
+                    "沒有生效的券商；請在 BROKER 管理中重新啟用")
+        return f"no_source: 未啟用任何券商（可用 {', '.join(BROKERS)}）"
+
+    def get_broker_prefs(self) -> dict:
+        """各券商的開關狀態（BROKER 管理頁的資料來源）。
+
+        一律列出全部可用券商（BROKERS）而不只係生效者，否則被停用者喺頁面上消失、無法重新啟用。
+        configured=False 即 .env 的 API_SOURCES 未包含該家，界面應把該開關灰掉並讀 detail。
+        """
+        rows = []
+        for name in BROKERS:
+            configured = name in self._brokers
+            rows.append({"source": name,
+                         "enabled": configured and name not in self._disabled,
+                         "configured": configured,
+                         "detail": "" if configured else
+                                   f"未在 API_SOURCES 中（.env 只啟用了 {', '.join(self._brokers) or '無'}）"})
+        return _prefs_ok(rows, f"ok: {len(rows)} 個券商（生效 {', '.join(self.sources()) or '無'}）")
+
+    def set_broker_enabled(self, enabled: Iterable[str]) -> dict:
+        """一次過設定生效的券商（完整名單），即時生效，不需重建本物件。
+
+        名單外的已配置券商即停用；未配置者（不在 API_SOURCES）不受影響，仍由 get_broker_prefs 以
+        configured=False 列出。持久化由調用方負責（閘道寫 broker_prefs.json），本層不讀寫檔。
+        """
+        wanted = {str(name).strip().lower() for name in enabled if str(name).strip()}
+        unknown = sorted(name for name in wanted if name not in BROKERS)
+        if unknown:
+            return _prefs_fail(f"unknown_source: {', '.join(unknown)}；可用券商為 {', '.join(BROKERS)}")
+        self._disabled = {name for name in self._brokers if name not in wanted}
+        return self.get_broker_prefs()
+
     # ---------- 清單 ----------
 
     def list_stocks(self, markets: Iterable[str] | None = None, broker: str | None = None, *,
                     raw: bool = False) -> dict:
         """股票清單。markets 為統一市場前綴（如 HK、US、SH），省略即用 DEFAULT_STOCK_MARKETS；
-        broker 指定只向該券商取（未啟用即 unknown_source，不提供該品種即 type_unsupported，
-        一律明確報錯，不會靜靜改用別家湊數）。raw=True 時 data 為各券商的原生欄位，取數範圍不變。"""
+        broker 指定只向該券商取（不存在即 unknown_source、已停用即 broker_disabled，不提供該品種即
+        type_unsupported，一律明確報錯，不會靜靜改用別家湊數）。raw=True 時 data 為各券商的原生欄位，
+        取數範圍不變。"""
         wanted = tuple(m.upper() for m in markets) if markets else DEFAULT_STOCK_MARKETS
         return self._gather(STOCK, lambda b: b.list_stocks(wanted, raw=raw), "股票清單",
                             broker=broker, markets=wanted, raw=raw)
@@ -260,9 +330,9 @@ class Brokery:
 
     def convert(self, code: str, source: str = "ib") -> dict:
         """統一代碼 → 該券商原生合約。用於把 US.NVDA、HK.00700、US.ESmain 換成券商內部標識。"""
-        broker = self._brokers.get(source)
+        broker = self._adapter(source)
         if broker is None:
-            return _fail(f"unknown_source: {source}；已啟用 {', '.join(self._brokers) or '無'}")
+            return _fail(self._source_error(source))
         try:
             info = broker.to_contract(code)
         except CodeError as exc:
@@ -320,9 +390,9 @@ class Brokery:
         raw=True 時 data 為該券商 bar 的原生欄位與格式（富途 time_key、Tiger/Webull 的 time、IB 的
         date），複權模式與 bar 數的處理不變。
         """
-        adapter = self._brokers.get(broker)
+        adapter = self._adapter(broker)
         if adapter is None:
-            return _fail(f"unknown_source: {broker}；已啟用 {', '.join(self._brokers) or '無'}", raw=raw)
+            return _fail(self._source_error(broker), raw=raw)
         if count < 1:
             return _fail(f"bad_count: {count}，bar 數須為正整數", raw=raw)
         autype = self.autype if autype is None else autype
@@ -375,9 +445,9 @@ class Brokery:
         raw=True 時起點與 on_update 的 rows 一律為原生欄位（見各券商的 NativeBars），回呼的觸發條件
         與 bar 數不變；返回的 data 不按 code/ts 排序（原生行沒有該兩欄），順序即各代碼的到達順序。
         """
-        adapter = self._brokers.get(broker)
+        adapter = self._adapter(broker)
         if adapter is None:
-            return _fail(f"unknown_source: {broker}；已啟用 {', '.join(self._brokers) or '無'}", raw=raw)
+            return _fail(self._source_error(broker), raw=raw)
         wanted = (codes,) if isinstance(codes, str) else tuple(codes)
         if not wanted:
             return _fail("bad_codes: 至少需要一個代碼", raw=raw)
@@ -458,14 +528,14 @@ class Brokery:
                 raw=raw,
             )
         if broker is None:
-            adapters = list(self._brokers.values())
+            adapters = list(self.adapters().values())
         else:
-            adapter = self._brokers.get(broker)
+            adapter = self._adapter(broker)
             if adapter is None:
-                return _accounts_fail(
-                    f"unknown_source: {broker}；已啟用 {', '.join(self._brokers) or '無'}", raw=raw,
-                )
+                return _accounts_fail(self._source_error(broker), raw=raw)
             adapters = [adapter]
+        if not adapters:
+            return _accounts_fail(self._no_source_message(), raw=raw)
 
         rows: list[dict] = []
         notes: list[str] = []
@@ -509,20 +579,20 @@ class Brokery:
         某市場沒有歷史數據時，不會被誤報為連線斷開。各家並行探測，每家一律有一行結果：連不上者
         connected=False、latency_ms 為 NaN（不以任何數字湊出），原因原樣寫入 detail。
         只要已啟用的券商都取得了結果即 status=True（哪怕全部連不上，「全部斷開」本身即有效答案）；
-        只有無券商可探測或指定了未啟用的券商時才 status=False。
+        只有沒有生效券商可探測，或指定了不存在／已停用的券商時，才 status=False。
 
         探測會實際建立連線，故不設快取，也不應定時輪詢；超過 .env 的請求超時仍未返回者記為
         timeout，本方法不會因此無限等待（該次呼叫仍會在後台跑完，但不影響本次返回）。
         """
         if broker is None:
-            adapters = list(self._brokers.values())
+            adapters = list(self.adapters().values())
         else:
-            adapter = self._brokers.get(broker)
+            adapter = self._adapter(broker)
             if adapter is None:
-                return _brokers_fail(f"unknown_source: {broker}；已啟用 {', '.join(self._brokers) or '無'}")
+                return _brokers_fail(self._source_error(broker))
             adapters = [adapter]
         if not adapters:
-            return _brokers_fail(f"no_source: 未啟用任何券商（可用 {', '.join(BROKERS)}）")
+            return _brokers_fail(self._no_source_message())
 
         limit = max(1.0, float(get_settings().request_timeout))
         # 不用 with：退出時會 join 仍在跑的執行緒，令上面的超時失效。
@@ -653,17 +723,18 @@ class Brokery:
                 raw: bool = False) -> dict:
         """向聲明支持該品種的券商取清單。
 
-        broker 指定只向一家取：未啟用即 unknown_source，該家未聲明該品種即 type_unsupported，一律明確
-        報錯而不靜默改用別家。markets 只過濾返回行的 market，用於沒有市場參數的接口（期貨／指數）；
+        broker 指定只向一家取：不存在即 unknown_source、已停用即 broker_disabled，該家未聲明該品種即
+        type_unsupported，一律明確報錯而不靜默改用別家。markets 只過濾返回行的 market，用於沒有市場參數
+        的接口（期貨／指數）；
         股票清單的市場由適配器自己處理，這裡的過濾只是確保返回的確實是所請求的市場。
 
         raw=True 時返回行為各券商的原生欄位，沒有 market/code：逐行的市場過濾與跨券商去重（兩者均以
         統一欄位名為鍵）一律跳過，市場範圍已由調用方的種子保證，跨券商的原生行則按原樣串接。
         """
         if broker:
-            adapter = self._brokers.get(broker)
+            adapter = self._adapter(broker)
             if adapter is None:
-                return _fail(f"unknown_source: {broker}；已啟用 {', '.join(self._brokers) or '無'}", raw=raw)
+                return _fail(self._source_error(broker), raw=raw)
             if not adapter.supports(symbol_type):
                 return _fail(
                     f"type_unsupported: {broker} 不提供{label}"
@@ -671,10 +742,12 @@ class Brokery:
                 )
             providers = [adapter]
         else:
-            providers = [b for b in self._brokers.values() if b.supports(symbol_type)]
+            providers = [b for b in self.adapters().values() if b.supports(symbol_type)]
             if not providers:
+                if not self.sources():
+                    return _fail(self._no_source_message(), raw=raw)
                 return _fail(
-                    f"no_source: 已啟用的券商（{', '.join(self._brokers)}）不提供{label}", raw=raw,
+                    f"no_source: 已啟用的券商（{', '.join(self.sources())}）不提供{label}", raw=raw,
                 )
 
         rows: list[dict] = []
