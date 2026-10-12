@@ -27,13 +27,13 @@ FastAPI 對外為 HTTP/WebSocket 與一個 dashboard（見 §11）；`brokery_we
 | 品種支持矩陣（股票／期貨／指數／期權）與復權適用範圍 | ✅ 已核實 | 四家實測（`run_kline_matrix.py`，48 項檢查）：不支持的品種由適配器聲明、`core` 統一返回 `type_unsupported`；復權只對股票有效（期貨／指數／期權的 `qfq` 與 `none` 逐根完全相同）；指數代碼可跨券商（`HK.800000` 富途與 IB 的 close 完全相同、`US..SPX` Tiger 與 IB 完全相同） |
 | 戶口與資金 `get_accounts`（四家統一 15 欄） | ✅ 可用 | FUTU + IB + Tiger + Webull（實測 futu 2 個（cash/margin，模擬與已停用的不列）、IB 1 個、Tiger 1 個、Webull 2 個；`currency` 全部填到：futu/IB/Webull 為 HKD、Tiger 為 USD；IB 的 `individual` 在按 `cash`/`margin` 篩選時點名說明而不靜默丟列；59 項檢查） |
 | 券商連線狀態與速度 `get_brokers`（統一 6 欄） | ✅ 可用 | FUTU + IB + Tiger + Webull 四家並行探測實測（futu 178ms／ib 542ms／tiger 1216ms／webull 954ms，總耗時 1.2s ≈ 最慢一家）；探測用一次戶口查詢，故不需要行情權限；22 項檢查全過 |
-| HTTP/WS 閘道與 dashboard `brokery_api`（自訂 API Key、K 線圖、實時訂閱、戶口（四家同屏、自動更新以秒為單位、預設 0 不更新）、標的（按來源分四區；離線 CODES 按券商各一檔，以單一表格顯示，另列一行顯示該家快照年齡，並有「讀取離線 CODES／更新 CODES」兩個按鈕）、日誌窗、四家連線狀態與延遲、讀取提示；另有 `/brokers/prefs`（讀寫券商開關，見 §15）、`/capabilities` 回報 `ktypes` 與生效的適配器、`/static/chart.js` 與 `/static/echarts.min.js` 為三個界面共用的同一份圖表規格（見 §16）） | ✅ 可用 | 四家經同一閘道實測（`/kline`、`/accounts`、`/brokers`、各清單與 `/stream` 均連通）；`run_api.py` 80 項檢查全過（不需券商連線，含 `/codes?broker=` 只讀該家那一檔、兩檔互不覆蓋、未存放時點名要更新的券商、`/brokers/prefs` 寫入後被停用者一律 `broker_disabled:` 且不再出現在 `/capabilities`、重啟即照喜好檔生效、`/static` 只放行白名單兩檔）；`run_ui.py` 47 項客戶端檢查全過（存根閘道 + Chromium：含兩頁的自動更新以秒為單位且預設 0 時空轉完全不打請求、按來源汇总並點名無返回者、標的頁一次點擊四區同時返回並區分「N 條／無返回／不提供此清單」、請求進行時的讀取提示、標的頁不再有「統一格式輸出」面板（即時清單只按來源分區）、離線 CODES 不分區而以單一表格顯示且欄位順序即接口原樣、該家快照一行顯示行數與距今時間且過舊以警告色提示、「更新 CODES」只向 `/codes/refresh` 送出且不带市場參數、換券商即改讀該家那一檔（不含別家的行數）、搜尋零結果且快照過舊時提示按「更新 CODES」、K 線頁預設 `HK.HSImain`／`1m`／1000 根且圖表由那份共用的 `chart.js` 與本地 echarts 畫出（已無 CDN）、下方表格按時間反序、`update` 只帶最近幾根時與已拉取的序列合併而不縮減行數） |
-| 量化交易 Web UI `brokery_webui`（上方菜單六項：「戶口清單」四家戶口與資金同屏；「標的列表」上方為類型／市場／券商篩選、下方為取得的清單，默認富途；「K 線拉取」「K 線串流」「K 線圖」三頁同一控制列（標的預設 `HK.HSImain`、週期預設 `1m`、根數預設 1000（上限 1000）、券商預設生效的第一家），下方 DataFrame **按時間反序（最新在最上）**，「K 線圖」另以那份共用的 `chart.js` 畫蠟燭＋成交量，串流的 `update` 與已拉取的序列合併（同 `ts` 覆蓋、歷史不被縮返）；「BROKER 管理」以開關列出全部券商，套用後即時生效並令各頁下拉框即時去掉被停用者；戶口與標的兩頁均有「自動更新（秒）」，預設 0 即不更新） | ✅ 可用 | 資料經同一閘道取得（實測 `http://127.0.0.1:8282` 顯示 6 個戶口：futu 2／ib 1／tiger 1／webull 2，15 欄與 `ACCOUNT_COLUMNS` 逐欄一致、缺失值為破折號）；券商選項由能力聲明填充、不提供該品種者標註且不可選，市場選項只由實際返回的 `market` 填充；標的頁另列一行顯示**所選券商**離線快照的行數與距今時間（過舊以警告色提示）、「讀取離線 CODES」轉發 `/codes?broker=`、「更新離線 CODES」轉發 `/codes/refresh?broker=`，換券商即改讀該家那一檔；定時更新預設只重讀離線快照，勾上「自動向券商重拉」才向券商取清單；K 線三頁一律經閘道（`/api/kline` 轉 `/kline`、`WebSocket /ws/stream` 雙向透傳 `/stream`，金鑰仍只在服務端），BROKER 開關經 `/api/brokers/prefs`；`run_webui.py` 79 項檢查全過（存根閘道 + Chromium，不需券商連線，含 WS 代理雙向透傳與上游不可達時返回明確 `error`、`/static` 只有一份圖表規格、四頁預設值與 DF 反序、串流合併、開關寫入後下拉框即時更新） |
-| 量化交易桌面 GUI `brokery_gui`（PySide6：六個分頁同 Web UI——「戶口清單」「標的列表」（**上方為該券商原生格式（`raw=True`）、下方為統一格式**，兩張表同一時刻同一篩選條件）、「K 線拉取」「K 線串流」「K 線圖」（同一控制列，標的預設 `HK.HSImain`、週期預設 `1m`、根數預設 1000（上限 1000），下方表格**按時間反序**；圖表用 `QWebEngineView` 載入那份共用的 `chart.js`，故自定義指標在三個界面看到的完全一樣；QtWebEngine 起不來時明確說明原因，下方表格照常）、「BROKER 管理」（開關列出全部券商，未配置者不可勾並顯示原因）；界面以 `.ui` 檔分離且檔內不含任何文字；繁體中文／简体中文／English 即時切換，每個語言一個 `.json`（現為 73 鍵，三份鍵集合一致）；戶口與標的兩頁均有「自動更新（秒）」，預設 0 即不更新） | ✅ 可用 | 與 Web UI 同一閘道、同一口徑（表格欄位由返回的 `columns` 決定、缺失值為破折號、資金欄千分位、券商選項由能力聲明填充且不提供該品種者標註並不可選、市場選項只由實際返回的 `market` 填充）；兩張表按同一請求先統一格式、再 `raw=True` 順序取數（同一閘道同一券商連線，不併發），舊回應不會蓋過新選擇；取數在背景執行緒，界面不因券商連線而凍結；標的頁另列一行顯示**所選券商**離線快照的行數與距今時間（過舊以警告色而非錯誤色提示）、「讀取離線 CODES」只向 `/codes?broker=` 讀該家那一檔、「更新離線 CODES」只向 `/codes/refresh?broker=` 送出且不带市場參數、換券商即改讀該家那一檔、切換語言時該行一併重貼；定時更新以秒為單位（預設 0 完全不請求，預設只重讀離線快照，勾「自動向券商重拉」才向券商取清單）；K 線三頁只經閘道（`/kline` 取歷史、`QWebSocket` 對 `/stream` 訂閱，收到的 `update` 經序列合併而非取代），取數一律在背景執行緒、回應由屬主執行緒的轉接物件交回 GUI 執行緒（PySide6 中連到普通可呼叫物件的信號會在發射執行緒執行，直接碰 `runJavaScript` 會崩潰）；`run_gui.py` 84 項檢查全過（存根閘道 + Qt 離屏，不需券商連線亦不需顯示器，含六個分頁與轉語言後全部標題、四頁預設值、表格欄位即 `K_COLUMNS` 且反序、訂閱與停止的按鈕狀態、合併後不縮返歷史、圖表起不來時 DF 照常、開關一改即重讀能力聲明） |
+| HTTP/WS 閘道與 dashboard `brokery_api`（自訂 API Key、K 線圖、實時訂閱、戶口（四家同屏、自動更新以秒為單位、預設 0 不更新）、標的（按來源分四區；離線 CODES 按券商各一檔，以單一表格顯示，另列一行顯示該家快照年齡，並有「讀取離線 CODES／更新 CODES」兩個按鈕）、日誌窗、四家連線狀態與延遲、讀取提示；另有 `/brokers/prefs`（讀寫券商開關，見 §15）、`/capabilities` 回報 `ktypes` 與生效的適配器、`/static/chart.js`、`/static/chart_grid.js` 與 `/static/echarts.min.js` 為三個界面共用的同一份圖表與多格規格（見 §16）） | ✅ 可用 | 四家經同一閘道實測（`/kline`、`/accounts`、`/brokers`、各清單與 `/stream` 均連通）；`run_api.py` 112 項檢查全過（不需券商連線，含 `/codes?broker=` 只讀該家那一檔、兩檔互不覆蓋、未存放時點名要更新的券商、`/brokers/prefs` 寫入後被停用者一律 `broker_disabled:` 且不再出現在 `/capabilities`、重啟即照喜好檔生效、`/static/{name}` 不需金鑰且內容即 `brokery/static/` 那一份（走到目錄之外或不存在即明確 404 `static_missing`）、`/stream` 按**請求簽名**（券商, 週期, 代碼, 根數, 複權, raw）登記——一條 WS 同時訂閱多個週期、每一幀一律帶 `broker`/`ktype`、`stop` 可按其中一個只收部分、已指示停止的訂閱不被第二次 `stop` 重複發 `closed`、「停止」後同一份請求再訂閱即**接手**仍在推送的串流（`subscribed` 帶 `resumed`，接手後照樣收到其後的 `update`）、同一份請求可被**兩條連接同時訂閱**（核對向券商只訂閱了一次、兩邊各收到同一份 `update`、`subscribed` 帶 `shared`；其中一方 `stop` 只退出自己，另一條照收且不會另起一次訂閱）、同一條連接重送同一份請求為冪等（不另開一條）；**簽名不同即另一條串流，同一券商同一週期可並行多條**（同週期兩格不同代碼各自訂閱一次並各推自己代碼、換根數即另起一條、`stop` 只帶 ktype 時逐條各發一份 `closed`），不再返回 `stream_busy`；**多週期界面（3×3 九格）即以此為依據**：一條連接九個訂閱、九份 `update` 各自帶自己嘅 `ktype`、`stop` 只帶一格嘅 ktype 時其餘八格照收）；`run_ui.py` 47 項客戶端檢查全過（存根閘道 + Chromium：含兩頁的自動更新以秒為單位且預設 0 時空轉完全不打請求、按來源汇总並點名無返回者、標的頁一次點擊四區同時返回並區分「N 條／無返回／不提供此清單」、請求進行時的讀取提示、標的頁不再有「統一格式輸出」面板（即時清單只按來源分區）、離線 CODES 不分區而以單一表格顯示且欄位順序即接口原樣、該家快照一行顯示行數與距今時間且過舊以警告色提示、「更新 CODES」只向 `/codes/refresh` 送出且不带市場參數、換券商即改讀該家那一檔（不含別家的行數）、搜尋零結果且快照過舊時提示按「更新 CODES」、K 線頁預設 `HK.HSImain`／`1m`／1000 根且圖表由那份共用的 `chart.js` 與本地 echarts 畫出（已無 CDN）、下方表格按時間反序、`update` 只帶最近幾根時與已拉取的序列合併而不縮減行數） |
+| 量化交易 Web UI `brokery_webui`（上方菜單六項：「戶口清單」四家戶口與資金同屏；「標的列表」上方為類型／市場／券商篩選、下方為取得的清單，默認富途；「K 線拉取」「K 線串流」兩頁同一控制列（標的預設 `HK.HSImain`、週期預設 `1m`、根數預設 1000 但**可任選數字**（上限 100000，與桌面 GUI 一致；該標的在該週期無咁深時 `message` 點名該來源的實際深度）、券商預設生效的第一家），下方 DataFrame 列出接口返回的**全部行**（不截斷，即原數據）**按時間反序（最新在最上）**；「K 線串流」在 DF 上方以那份共用的 `chart.js` 畫蠟燭＋成交量（縮放、平移、雙擊復原與現價線一律由那份規格提供，見 §16），圖與表格同一份序列：先取歷史再開串流，串流的 `update` 與已拉取的序列合併（同 `ts` 覆蓋、歷史不被縮返，保留的根數即所填的根數），開圖傳 `start: 0` 即所請求的根數全部喺圖上，訂閱只開**一條** `WebSocket /ws/stream`；一份串流由請求簽名界定，**同一券商同一週期可同時並行多條**（換根數或換代碼即另一條），閘道不再返回 `stream_busy`，界面已沒有倒數與自動重送；同簽名時與桌面 GUI 共用同一條串流（一方已訂閱即接手），協定錯誤（`ktype_unsupported`、`broker_disabled`、`bad_request`）原樣呈現、唔自動重送；「K 線串流（多週期）」**一格一週期、九格同時串流**：格子與每格上方的水平週期按鈕一律取所選券商聲明的 `stream_ktypes`（futu 九個正好 3×3、IB 得部分、只聲明 `1m` 者得返一格），界面唔自行排列亦唔憑空補週期；下方唔列 DF，一格一份序列，根數由控制列一個共用輸入（預設 300），一個「開始／停止」管全部格子，逐格只有週期按鈕——換一格即只重取嗰格、只退該週期的串流，別格已顯示同一週期時即同簽名，沿用同一份推送唔另起一條，九個訂閱仍只用**一條** `WebSocket /ws/stream`（瀏覽器對同一來源只有數條 HTTP/1.1 連線，九條必死）；「BROKER 管理」以開關列出全部券商，套用後即時生效並令各頁下拉框即時去掉被停用者；戶口與標的兩頁均有「自動更新（秒）」，預設 0 即不更新） | ✅ 可用 | 資料經同一閘道取得（實測 `http://127.0.0.1:8282` 顯示 6 個戶口：futu 2／ib 1／tiger 1／webull 2，15 欄與 `ACCOUNT_COLUMNS` 逐欄一致、缺失值為破折號）；券商選項由能力聲明填充、不提供該品種者標註且不可選，市場選項只由實際返回的 `market` 填充；標的頁另列一行顯示**所選券商**離線快照的行數與距今時間（過舊以警告色提示）、「讀取離線 CODES」轉發 `/codes?broker=`、「更新離線 CODES」轉發 `/codes/refresh?broker=`，換券商即改讀該家那一檔；定時更新預設只重讀離線快照，勾上「自動向券商重拉」才向券商取清單；K 線各頁一律經閘道（`/api/kline` 轉 `/kline`、`WebSocket /ws/stream` 雙向透傳 `/stream`，金鑰仍只在服務端），BROKER 開關經 `/api/brokers/prefs`；`run_webui.py` 111 項檢查全過（存根閘道 + Chromium，不需券商連線，含 WS 代理雙向透傳與上游不可達時返回明確 `error`、`/static` 只有一份圖表規格、兩頁預設值與 DF 反序、**DF 列出接口返回的全部行（120 行的存根返回 120 行，不截斷）**、根數可任填（上限 100000）且 3000 原樣送到閘道、合併器上限跟住 3000（唔會裁返 1000）、開圖 `start: 0` 即圖上的 bar 數即合併後的根數、換週期後 x 軸格式跟住改、**同一券商同一週期可並行多條**（多週期頁已佔住 `futu/1m` 時「K 線串流」頁照樣訂閱同一券商同一週期，另開一條連接、唔被拒、唔使等；兩條各自收到推送各 +2 根，互不取代；停其中一條只收返該條，另一條照舊串流並繼續收推送）、協定錯誤原樣呈現且唔被自動重送、串流合併、訂閱只開一條上游 WebSocket、串流頁在 DF 上方以本地 echarts 畫出 canvas 且表格行數即合併後的根數（圖與表格同一份序列）、一律先取歷史才建立串流（取不到歷史即不訂閱，故畫面永遠一條連續序列）、開關寫入後下拉框即時更新、`/static/chart_grid.js` 與 `brokery/static/` 那一份逐 byte 相同、**多週期頁按聲明起九格**（九個實例、每格九個水平按鈕只有該格高亮、無 DF 表格）、九格逐格取歷史先至開**一條**連接的九個訂閱、`update` 按自帶的 `ktype` 只畫對應嘅格（日線格與分鐘格的 x 軸格式必然不同）、一格只畫一個 grid 一條 series（緊湊規格，唔帶成交量格與現價大字）、換一格只送帶該 ktype 的 `stop` 且唔開第二條連接、換返一個已無格子顯示的週期即補訂閱、舊週期仍有別格顯示即唔退它、一個「停止」只送一次裸 stop 並就地提示已停止、換券商即按該家聲明的順序原樣重建格子（IB 未排序的聲明即見其原序）） |
+| 量化交易桌面 GUI `brokery_gui`（PySide6：六個分頁同 Web UI——「戶口清單」「標的列表」（**上方為該券商原生格式（`raw=True`）、下方為統一格式**，兩張表同一時刻同一篩選條件）、「K 線拉取」「K 線串流」（同一控制列，標的預設 `HK.HSImain`、週期預設 `1m`、根數預設 1000 但**可任選數字**（上限 100000；該標的在該週期無咁深時 `message` 會點名該來源的實際深度），下方表格列出返回的**全部行**並**按時間反序**）、「K 線串流（多週期）」（**一格一週期、九格同時串流**：格子與每格上方的水平週期按鈕一律取所選券商聲明的 `stream_ktypes`，界面唔自行排列亦唔憑空補週期；一格一份序列，根數由控制列一個共用輸入（預設 300），一個「開始／停止」管全部格子，逐格只有週期按鈕——換一格即只重取嗰格、只退該週期的串流，別格已顯示同一週期時即同簽名，沿用同一份推送；九個訂閱只用**一條** `QWebSocket`；下方唔列 DF，格子由 `brokery/static/chart_grid.js` 在 `QWebEngineView` 內生成，按鈕只帶語言中性的週期名，換語言唔使重建格子）、「BROKER 管理」（開關列出全部券商，未配置者不可勾並顯示原因）；「K 線串流」在表格上方以 `QWebEngineView` 載入那份共用的 `chart.js` 畫圖（由可重用元件 `KlineChart` 持有：容器 + 提示列 + 惰性視圖封成一個物件，每個有圖表區的分頁各持一個，日後任何頁要加圖只傳容器與提示列），渲染時傳 `start: 0`，即本次所請求的根數全部喺圖上（`dataZoom` 照可縮放，Web UI 不受影響），故自定義指標在三個界面看到的完全一樣，圖與表格同一份序列；QtWebEngine 起不來時明確說明原因，下方表格照常；**訂閱咗就唔好再訂閱，直接串流**——該串流執行緒要到時窗走完才停下（「停止」只提前收尾），故「停止」後再訂閱同一份請求（同簽名）由它**接手**仍在推送的串流，即刻繼續收；同一份參數（同代碼、同根數）亦可與 Web UI **同時收同一份 bar**，一邊停止或收線都唔影響另一邊；**簽名不同即另一條串流，同一券商同一週期可同時並行多條**（換根數或換代碼即另一條），閘道不再返回 `stream_busy`，界面已沒有倒數與自動重送（`kline.quota_wait`／`kline.wait_cancelled` 已從三份字庫刪除），協定錯誤原樣呈現、唔自動重送；界面以 `.ui` 檔分離且檔內不含任何文字；繁體中文／简体中文／English 即時切換，每個語言一個 `.json`（現為 74 鍵，三份鍵集合一致）；戶口與標的兩頁均有「自動更新（秒）」，預設 0 即不更新） | ✅ 可用 | 與 Web UI 同一閘道、同一口徑（表格欄位由返回的 `columns` 決定、缺失值為破折號、資金欄千分位、券商選項由能力聲明填充且不提供該品種者標註並不可選、市場選項只由實際返回的 `market` 填充）；兩張表按同一請求先統一格式、再 `raw=True` 順序取數（同一閘道同一券商連線，不併發），舊回應不會蓋過新選擇；取數在背景執行緒，界面不因券商連線而凍結；標的頁另列一行顯示**所選券商**離線快照的行數與距今時間（過舊以警告色而非錯誤色提示）、「讀取離線 CODES」只向 `/codes?broker=` 讀該家那一檔、「更新離線 CODES」只向 `/codes/refresh?broker=` 送出且不带市場參數、換券商即改讀該家那一檔、切換語言時該行一併重貼；定時更新以秒為單位（預設 0 完全不請求，預設只重讀離線快照，勾「自動向券商重拉」才向券商取清單）；K 線各頁只經閘道（`/kline` 取歷史、`QWebSocket` 對 `/stream` 訂閱，收到的 `update` 經序列合併而非取代；一個訂閱只開一條 `QWebSocket`），取數一律在背景執行緒、回應由屬主執行緒的轉接物件交回 GUI 執行緒（PySide6 中連到普通可呼叫物件的信號會在發射執行緒執行，直接碰 `runJavaScript` 會崩潰）；`run_gui.py` 120 項檢查全過（存根閘道 + Qt 離屏，不需券商連線亦不需顯示器，含六個分頁與轉語言後全部標題、各頁預設值、根數可任選（`countSpin` 上限 100000；`count=3000` 原樣轉發且序列容器上限跟隨它，唔會裁返 1000）、圖表為可重用元件且每個有圖表區的分頁各持一個（主窗口不再持有視圖）、渲染傳 `start: 0` 即所請求的根數全部喺圖上、表格欄位即 `K_COLUMNS` 且反序、訂閱與停止的按鈕狀態、一個訂閱只開一條連接、合併後不縮返歷史、圖表惰性建立且渲染的根數與表格一致（圖與 DF 同一份序列，並照控制列的週期顯示時間軸）、圖表起不來時以明確原因提示而下方 DF 照常、先取歷史才建立串流（取不到歷史即不訂閱）、取歷史在途時撳「停止」即取消意圖、停止後重按「訂閱」會重新先取歷史（不被已收尾的連接擋住）、**接手唔使等**（按「停止」後不預先記低 `closed` 帧給的收尾秒數——同一份請求由閘道接手，界面唔該白等 → 「停止」後再按「訂閱」即刻送訂閱幀、即刻串流）、載入成功即清走「正在載入圖表」的提示、K 線圖佔盡圖表區的高度、K 圖佔頁面高度的一半以上（圖表區與 DF 按 .ui 的 3:2 分配）、開關一改即重讀能力聲明、多週期頁的 .ui 無任何文字亦無週期下拉框與表格、格子數與順序即該家聲明的 `stream_ktypes`（存根把 ib 刻意排成未排序的順序，一排序即露餂）、九格逐格取歷史先至開**一條** `QWebSocket` 的九個訂閱、`update` 按自帶的 `ktype` 只餵對應嘅格、換一格只重取嗰格並只送帶該 ktype 的退訂、別格已顯示同一週期即同簽名，唔退它亦唔另起一條、**同一券商同一週期可並行多條**（多週期頁已佔住 `futu/1m` 時另一頁照樣訂閱，另開一條連接、唔使等；兩條各自收到推送各 +2 根；停一條唔影響另一條；已收返嘅連接唔再被填）、協定錯誤原樣呈現且唔被自動重送、`GridView` 惰性建立且起不來時以明確原因提示） |
 | 券商開關（BROKER 管理，全域生效） | ✅ 可用 | 一個本地 JSON 檔 `<data_dir>/broker_prefs.json`（由 `.env` 的資料目錄決定），**只記被停用的家**，故 `.env API_SOURCES` 改了也不會留下舊名單；檔不存在或壞咗即全部生效（不需遷移）。生效集合 = `.env API_SOURCES` ∩ 喜好，由 `core` 統一執行：被停用者一律不經過它（`get_kline`／`stream_kline`／三個清單／`get_accounts`／`get_brokers`／`convert` 全部返回 `broker_disabled:`，與連不上、未聲明（`unknown_source`／`type_unsupported`）在 message 上分清楚），三個界面的券商下拉框因此自動更新，不需要逐處開關。開關只影響界面：喜好檔只由閘道讀寫，`core` 只接受 `Brokery(disabled=…)`，故逐家取數的驗收與離線分析（唔傳 `disabled`）不受界面上嘅開關影響。`run_broker_prefs.py` 18 項檢查全過（存根券商 + 臨時資料目錄，不需連線、不觸及實際喜好檔） |
-| 共用圖表層（一份規格，三個界面同畫） | ✅ 可用 | `brokery/static/chart.js` 是唯一一份渲染規格（`window.BrokeryChart`：蠟燭 + 成交量兩格、`dataZoom`、x 軸一律用原始 `ts`，時間文字只由 formatter 產生），`brokery/chart.py` 是 Python 側唯一入口（`payload`/`render_js`/`BarStore`）；`echarts.min.js` 為本地 vendor（已無 CDN，故 GUI 與 Docker 離線都畫到圖）。**疊加指標是資料不是圖**：由 pandas 按 `OVERLAY_COLUMNS`（`code/kind/name/start_ts/end_ts/start_price/end_price/side`）算出行，`chart.js` 只把行變圖形，`overlays.register(kind, fn)` 為掛點（內置 `zone`/`line`；日後 ICT order block 只 register 一個函數，三處自動一樣）。序列合併規則三處同一口徑（key=(code,ts)、同 `ts` 以新到者覆蓋、每個代碼只保留最新 N 根、內部一律升序；「最新在最上」只屬顯示層）。`run_chart_spec.py` 17 項檢查全過（含真畫到嘢與同一實例可重用） |
+| 共用圖表層（一份規格，三個界面同畫） | ✅ 可用 | `brokery/static/chart.js` 是唯一一份渲染規格（`window.BrokeryChart`：蠟燭 + 成交量兩格、`dataZoom`、x 軸一律用原始 `ts`，時間文字只由 formatter 產生；`opts.compact` 為同一份規格的緊湊形態：只畫價格圖一個 grid、唔帶成交量格與現價大字，縮放平移照常，多格界面因此唔使第二份規格），`brokery/static/chart_grid.js` 是唯一一份**多格**規格（`window.BrokeryGrid.build(el, {ktypes, onPick})`：一格一週期，每格上方一排水平週期按鈕只有當前者高亮，頁內零文字（按鈕只帶 `1m`/`day` 呢類語言中性嘅週期名，換語言唔使重建格子），`set(i,…)` 只重畫一格、`takePicks()` 供桌面 GUI 輪詢（QWebChannel 喺 offscreen 載入即 segfault，已實測）），`brokery/chart.py` 是 Python 側唯一入口（`payload`/`render_js`/`BarStore`，多格一側為 `grid_page`/`grid_js`/`grid_set_js`/`grid_note_js`/`grid_picks_js`）；`echarts.min.js` 為本地 vendor（已無 CDN，故 GUI 與 Docker 離線都畫到圖）。**疊加指標是資料不是圖**：由 pandas 按 `OVERLAY_COLUMNS`（`code/kind/name/start_ts/end_ts/start_price/end_price/side`）算出行，`chart.js` 只把行變圖形，`overlays.register(kind, fn)` 為掛點（內置 `zone`/`line`；日後 ICT order block 只 register 一個函數，三處自動一樣）。序列合併規則三處同一口徑（key=(code,ts)、同 `ts` 以新到者覆蓋、每個代碼只保留最新 N 根、內部一律升序；「最新在最上」只屬顯示層）。`BrokeryChart.create(el, opts)` 為一圖一實例（`update`/`overlays`/`reset`/`destroy`，各自記自己的縮放範圍，故串流 `update` 唔會跳返原位），**縮放、平移、雙擊復原與現價水平線一律由這份規格提供，界面不寫一行**（滾輪縮 X 軸、Shift+滾輪只縮 Y 軸即單軸、拖曳左右平移、雙擊復原、現價線取序列最後一根的收市價）；`run_chart_spec.py` 47 項檢查全過（含真畫到嘢、真滾輪/真拖曳/真雙擊、同一實例可重用、`store().setLimit()` 令上限跟界面請求的根數、`render()` 每次都帶規格（換週期後 x 軸格式跟住改）、現價大字只在價格真的改變時閃一次，並真執行 Python 生成的 `render_js`；`compact` 時 `option()` 只一條 series 一個 grid 無現價大字，非 `compact` 逐項照舊；`BrokeryGrid` 九格九實例互不影響、撳按鈕只重畫一格並只上報 `[格, 週期]`、`takePicks()` 取走即清空、`resizeAll()` 涵蓋全部格子） |
 | 一次過啟動閘道與 Web UI `run_all.py`（其中一個先結束即停止另一個，Ctrl+C 一併停止） | ✅ 可用 | 實測 `python run_all.py`：兩個端口同時回應、Web UI 可經剛啟動的閘道取數、送 Ctrl+C 後兩個一併退出且端口釋放；`run_launch.py` 7 項檢查全過（存根命令，不需券商連線，亦不真的啟動服務） |
-| K 線串流 `stream_kline`（一條連線同時串流多個代碼） | ✅ 可用 | FUTU 實時推送 + IB `keepUpToDate` + Tiger `subscribe_kline` 原生推送 + Webull 輪詢批量 bar（憑證只開通 HK 行情，美股明確報錯 `market_data_not_subscribed`）；實測 futu/ib/tiger/webull 全部合規格（Tiger 一條連線同時串流港美 3 個代碼；Webull 以 2 個 HK 代碼共用一次輪詢）；推送本身要開市才收得到 |
+| K 線串流 `stream_kline`（一條連線同時串流多個代碼，同一條連線亦可並行多個週期，同一週期亦可並行多條） | ✅ 可用 | FUTU 實時推送 + IB `keepUpToDate` + Tiger `subscribe_kline` 原生推送 + Webull 輪詢批量 bar（憑證只開通 HK 行情，美股明確報錯 `market_data_not_subscribed`）；實測 futu/ib/tiger/webull 全部合規格（Tiger 一條連線同時串流港美 3 個代碼；Webull 以 2 個 HK 代碼共用一次輪詢）；推送本身要開市才收得到。**多週期並行**：可並行的週期一律由適配器聲明（`SymbolBroker.stream_ktypes`；futu 為全部 9 個、IB 為其 `BarSize` 表、tiger/webull 只聲明 `1m`），futu 實測同一條連線並行 1m/3m/5m 時各週期取到自己週期的 bar（`ts` 間距分別為 60/180/300s 的整數倍）且沒有另開連線；**同一週期的第二份照樣並行**——上游訂閱按**（代碼, 週期）引用計數**，並行期間不退訂閱，全部結束才退一次（見 §17）；`run_stream_kline.py` 35 項 PASS / 5 FAIL，5 個 FAIL 全部係 IB 連唔到 TWS（`WinError 1225`，屬環境而非代碼） |
 
 ## 快速開始
 
@@ -252,12 +252,15 @@ bk.get_kline("HK.00001")                                  # 富途日線最近 6
 bk.get_kline("HK.00001", ktype="5m", count=200)          # 日內
 bk.get_kline("HK.00001", broker="ib", autype="none")     # 同一組 bar，改經 IB 取
 bk.get_kline("HK.00005", broker="ib", autype="qfq")      # IB 前復權（僅日內/日線，因子與富途不同）
-bk.get_kline("US.NVDA", ktype="day", count=1200)         # 超過 1000 根自動改用富途歷史接口
+bk.get_kline("US.NVDA", ktype="day", count=3000)         # 根數可任選：不足即自動補富途歷史接口
 bk.get_kline("HK.00001", autype="hfq")                   # 後復權（只有富途支援）
 Brokery(autype="none")                                   # 全域預設複權模式，逐次呼叫可再覆蓋
 ```
-`ktype` 為 `1m/3m/5m/15m/30m/60m/day/week/month`；`count` 一律是 **bar 數**（富途語義），
-`broker` 選來源，`autype` 為 `qfq`/`hfq`/`none`（見下）。`data` 的欄位固定為 `brokers.base.K_COLUMNS`：
+`ktype` 為 `1m/3m/5m/15m/30m/60m/day/week/month`；`count` 一律是 **bar 數**（富途語義），**與週期無關**：
+各家一律取盡自己在該週期可取的深度，唔會因為取數路徑而少返（富途實測傳 1000 根時 `1m`–`week` 皆得 1000 根，
+`run_futu_kline.py` 13 項離線檢查即重現呢個口徑）。該標的在該週期確實無咁深時 `status` 仍為 `True`，
+但 `message` 會點名該來源的實際深度（`ok: 257 根 month K 線（…），futu 的 month 深度只有 257 根（請求 1000 根）`），
+唔會靜靜少返。`broker` 選來源，`autype` 為 `qfq`/`hfq`/`none`（見下）。`data` 的欄位固定為 `brokers.base.K_COLUMNS`：
 
 | 欄位 | 說明 |
 | --- | --- |
@@ -275,7 +278,7 @@ close 逐根吻合，最大相差 < 0.4%）：
 
 | 來源 | 取數方式 | 複權 | 成交額 |
 | --- | --- | --- | --- |
-| FUTU | 原生就是 bar 數：≤1000 根用 `get_cur_kline`（需先訂閱同類型），更多改用 `request_history_kline` 按日期範圍分頁再截尾 | `qfq`/`hfq`/`none`（所有 ktype） | 有 |
+| FUTU | 原生就是 bar 數，但 `get_cur_kline` 對多數週期只給最近幾十根（實測傳 1000 根時只有 `1m`/`15m` 給足），故它只作快路徑：不足即以 `request_history_kline` 按日期範圍分頁多取，兩段按 `ts` 去重合併（同一根以快路徑者為準，其價格為最新狀態）再截尾。起日由 `span_days` 推算，過早會被上游拒（F3CNN 錯誤），故把跨度折半重試至一年下限，仍失敗即明確抛出而不少返 | `qfq`/`hfq`/`none`（所有 ktype） | 有 |
 | IB | 無 bar 數參數：由 bar 數反推時間跨度（`brokers.base.span_days`，按 365/240 放大並加假期緩衝，刻意多取）再取最後 `count` 根 | `none`（原始成交價）；`qfq` 只適用日內與日線（`ADJUSTED_LAST`） | 無（`NaN`） |
 | Tiger | `get_bars` 原生就是 bar 數（`limit`）；鑑權為 RSA 簽名，需 `.env` 的 `TIGER_PRIVATE_KEY` | `qfq`（`right=BR`）/`none`；無後復權概念 | 無（`NaN`） |
 | Webull | `get_batch_history_bar` 原生就是 bar 數（單次上限 1200 根，要求更多只能取到上限） | **不可選**：接口沒有復權參數，價格由週期固定（日線及以上為前復權、分鐘線為不復權），要求另一種即報錯 | 無（`NaN`） |
@@ -348,6 +351,14 @@ bar 合併結果，欄位與 `get_kline` 完全相同（`K_COLUMNS`）。
 **多個代碼只有一條連線**：所有代碼的訂閱都掛在同一條持久連線（IB 的 `_SharedConnection`、富途的同一
 `OpenQuoteContext`、Webull 的同一 `DataClient`/token）上，因此 4 圖、8 圖不會各自開連線；結束時一律
 退訂，不佔用帳戶的訂閱名額。
+
+**同一條連線亦可並行多個週期，同一週期亦可並行多條**：可並行的週期一律由適配器聲明（`SymbolBroker.stream_ktypes`：
+futu 為全部九個、IB 為其 `BarSize` 表、tiger/webull 只聲明 `1m`）。富途的推送回呼（`_KlinePushRouter`）按推送行上的
+`k_type` 分派給各週期各自的接收器，故 1m/3m/5m 並行時各週期取到自己週期的 bar（實測 `ts` 間距分別為
+60/180/300s 的整數倍）且沒有另開連線；同一週期的第二份（例如另一個代碼，或另一條同週期的串流）照樣並行——富途的
+上游訂閱按**（代碼, 週期）引用計數**，最後一份結束才 `unsubscribe`，故並行時不會互相蓋走訂閱（舊行為「同週期第二份
+即拒」已移除）。IB 每個（代碼, 週期）各自一次 `reqHistoricalData(keepUpToDate)`，本來就可並行。界面如何用一條
+連接覆蓋九個週期見 §17。
 
 三家（FUTU/IB/Tiger）用**原生推送**，Webull 沒有 K 線推送故以輪詢湊出相同的回呼語義：
 
@@ -458,10 +469,18 @@ python brokery_api/run.py     # 監聽 .env 的 API_HOST/PORT，開瀏覽器即�
   即該券商自帶的欄位與值，取數範圍與數值不變；不帶該參數時仍為統一欄位。
 - **串流**：送 `{"action":"subscribe","codes":[…],"ktype":…,"count":…,"broker":…,"autype":…}`，
   收 `subscribed` → 每次推送為 `update`（附該代碼目前**完整**的序列，客戶端整份覆蓋，不做本地合併）
-  → 到時結束為 `end`；送 `{"action":"stop"}` 即 `closed`（附還差多少秒才釋放名額）。同一券商同時只
-  容許一條串流（富途的推送回調按連線設置，兩條會互相覆蓋），第二條即 `stream_busy:`；失敗或結束時
-  名額即時歸還。歷史起點由 `/kline` 取，`/stream` 只推更新。ktype、複權與品種是否支持一律由 Brokery
-  判定，閘道不另設規則。
+  → 到時結束為 `end`；送 `{"action":"stop"}` 即 `closed`（只帶 `ktype` 時只停該週期的各條，逐條各發一份；
+  `closed` 仍附 `release_in` 說明該執行緒還差多少秒才真正收尾，但界面已不再照它倒數）。
+  **一份串流由「請求簽名」界定**（券商、週期、代碼、根數、複權、raw）：同簽名即同一份請求，可被**多條連接
+  同時訂閱**——閘道只向券商訂閱一次，每條連接各收到同一份 `update`（`subscribed` 帶 `shared`），故桌面 GUI 與
+  Web UI 可同時睇同一張圖；其中一方停止或斷線不影響另一方，最後一方退出才結束該串流。該執行緒要到時窗走完
+  才停下，故一時無人收時照樣仍在——同一份請求再訂閱即**接手**那條仍在推送的串流（`subscribed` 帶 `resumed`，
+  `seconds` 為剩餘秒數），不重新向券商訂閱。**簽名不同即另一條串流，同一券商同一週期亦可同時並行多條**
+  （例如兩格同週期但代碼不同，或根數不同），各自向券商訂閱、各自收推送，閘道不再返回 `stream_busy`，界面亦
+  沒有名額可等。剩下的拒絕只係「改參數先解決到」的協定錯誤（`ktype_unsupported`、`broker_disabled`、
+  `bad_request`），其 error 帧點名 `broker`/`ktype` 且不收線，由用戶改參數，界面不自動重送訂閱。歷史起點由
+  `/kline` 取，`/stream` 只推更新。
+  ktype、複權與品種是否支持一律由 Brokery 判定，閘道不另設規則。
 - **日誌**：每個請求與每個業務結果一律寫入控制台、`logs/brokery_api.log`（滾動檔）與記憶體環形
   緩衝（由 `/logs` 讀）；自訂金鑰一律遮罩，不會落入日誌檔。
 - **連線狀態**：dashboard 頂欄以四家券商的指示（可連／斷開 + 延遲毫秒，懸停顯示原因與戶口數）顯示，
@@ -493,8 +512,9 @@ python brokery_api/run.py     # 監聽 .env 的 API_HOST/PORT，開瀏覽器即�
 
 ### 12. 量化交易 Web UI（`brokery_webui`）
 與 `brokery/`、`brokery_api/` 同級的獨立進程：上方為菜單六項——「戶口清單」（四家的戶口與資金同屏）、
-「標的列表」（上方為類型／市場／券商篩選，下方為取得的清單，默認富途）、「K 線拉取」「K 線串流」「K 線圖」
-（三頁同一控制列與同一張下方表格，見下）與「BROKER 管理」（券商開關，見 §15）。
+「標的列表」（上方為類型／市場／券商篩選，下方為取得的清單，默認富途）、「K 線拉取」「K 線串流」
+（兩頁同一控制列與同一張下方表格；串流頁另在表格上方畫出 K 線圖，見下）、「K 線串流（多週期）」
+（3×3 九格同時串流，下方無表格，見 §17）與「BROKER 管理」（券商開關，見 §15）。
 
 ```bash
 python brokery_webui/run.py   # 監聽 .env 的 GUI_HOST/GUI_PORT；需先啟動 brokery_api 閘道
@@ -523,15 +543,31 @@ python brokery_webui/run.py   # 監聽 .env 的 GUI_HOST/GUI_PORT；需先啟動
 - **定時更新（秒）**：戶口頁與標的頁各有一個「自動更新（秒）」輸入，**預設 0 即完全不請求**；非 0 時只在
   該頁可見時才排下一次，請求進行中不會重複送出，進入該頁或改動秒數即重新計時。標的頁的定時更新預設只
   重讀離線快照，勾上「自動向券商重拉」（預設關閉）才改為向券商取清單。
-- **K 線三頁**：控制列一律為標的（預設 `HK.HSImain`）、週期（由 `/api/capabilities` 的 `ktypes` 填充，預設
-  `1m`）、根數（預設 1000、上限 1000）、券商（只列生效的家，預設 futu）。取歷史一律經 `/api/kline` 轉
-  `/kline`，界面不另設一套參數判定。下方表格欄位即 `K_COLUMNS`，**按時間反序（最新在最上）**；升序只存在於
+- **K 線兩頁**：控制列一律為標的（預設 `HK.HSImain`）、週期（由 `/api/capabilities` 的 `ktypes` 填充，預設
+  `1m`）、根數（預設 1000，**可任選數字**，上限 100000，與桌面 GUI 一致；該標的在該週期無咁深時 `message`
+  會點名該來源的實際深度，見 §6）、券商（只列生效的家，預設 futu）。取歷史一律經 `/api/kline` 轉
+  `/kline`，界面不另設一套參數判定。下方表格欄位即 `K_COLUMNS`，**列出接口返回的全部行**（不做「只列最近
+  N 行」的截斷：原數據是幾多根就列幾多行），**按時間反序（最新在最上）**；升序只存在於
   合併用的序列，反序屬顯示層，故圖表與跨券商對齊不受影響。
 - **K 線串流**：`WebSocket /ws/stream` 連上游 `ws://…/stream?api_key=`，訂閱幀與 `update` 雙向原樣透傳，上游
-  不可達即返回明確 `error`（不把連線失敗留給頁面猜），金鑰仍只在服務端。收到的 `update` 只帶最近 `count` 根，
-  故一律與已拉取的序列合併（key=(code,ts)、同 `ts` 以新到者覆蓋、保留最新 N 根），不會把 1000 根歷史縮返最近幾根。
-- **K 線圖**：圖表由那份共用的 `brokery/static/chart.js` 畫（經 `/static/chart.js` 與本地 `/static/echarts.min.js`，
-  已無 CDN），頁面不寫 series 與座標軸（見 §16）。
+  不可達即返回明確 `error`（不把連線失敗留給頁面猜），金鑰仍只在服務端。按「訂閱實時」即**先取歷史、再開串流**
+  （先向 `/api/kline` 取控制列現值的歷史，歷史已在圖上才建立連接；取不到歷史即不訂閱，免得得返一張只有最近
+  幾十根實時 bar 的圖）。收到的 `update` 只帶最近 `count` 根，故一律與已拉取的序列合併（key=(code,ts)、同 `ts`
+  以新到者覆蓋、保留最新 N 根），不會把 1000 根歷史縮返最近幾根；N 即控制列所填的根數（`store().setLimit()`，
+  寫死時取 3000 根會被裁返 1000）。一個訂閱只開一條上游連接；多週期頁（§17）的九個訂閱同样只用一條——瀏覽器對
+  同一來源的 HTTP/1.1 連線約得六條，九條會直接排唔上，所以分派靠 `update` 自帶的 `ktype` 而唔靠連接。
+- **沒有名額可等，協定錯誤原樣呈現**：一份串流由請求簽名界定（見 §11），同一券商同一週期可同時並行多條，閘道
+  不再返回 `stream_busy`，故界面已沒有倒數與自動重送（舊的「名額尚未釋放，約 N 秒後自動訂閱」一律刪除）。同簽名
+  即同一份：桌面 GUI 與 Web UI 填一樣參數即同時收同一份 bar（`subscribed` 帶 `shared`），一方已訂閱時另一方再送
+  即接手（帶 `resumed`），唔使等。剩下被拒的只有「改參數先解決到」的協定錯誤（`ktype_unsupported`、
+  `broker_disabled`、`bad_request`）：`error` 帧點名 `broker`/`ktype` 且**不收線**，頁面把原因原樣顯示、不自動重送
+  訂閱，按鈕亦唔解鎖，由用戶改參數或撳「停止」收返呢條連接（與桌面 GUI 同一口徑，見 §13）。
+- **K 線圖在 DF 上方**：圖表由那份共用的 `brokery/static/chart.js` 畫（經 `/static/chart.js` 與本地
+  `/static/echarts.min.js`，已無 CDN），頁面不寫 series 與座標軸（見 §16）；縮放、平移、雙擊復原與現價線一律由
+  那份規格提供，頁面不需要傳任何交互參數；開圖時傳 `start: 0`，即本次所請求的根數全部喺圖上（`dataZoom` 照可
+  再收窄，`DEFAULT_START` 只是省略該項時的預設）。圖與下方表格讀同一份合併後的序列，故兩者看到的根數與時間範圍
+  永遠一致；換週期後 x 軸格式即跟住改（規格屬該次輸入的一部分，每次渲染都要交）。圖高為固定的 420px（瀏覽器
+  內不隨視窗拉伸，與桌面 GUI 的「K 圖佔頁面一半以上」屬兩回事）。
 - **BROKER 管理**：開關列出全部券商（含未配置者，否則被停用者會由頁面上消失、無法再啟用），「套用」一次交齊
   完整生效名單到 `/api/brokers/prefs/update`，並直接以回應重畫（回應即最新狀態，不需再讀一次）；成功後重讀
   `/api/capabilities`，各頁的券商下拉框即時去掉被停用者。
@@ -541,7 +577,8 @@ python brokery_webui/run.py   # 監聽 .env 的 GUI_HOST/GUI_PORT；需先啟動
 ### 13. 量化交易桌面 GUI（`brokery_gui`）
 
 與 Web UI 同一功能的桌面窗口（PySide6）：六個分頁——「戶口清單」「標的列表」（類型／市場／券商篩選在上、
-清單在下，默認富途）、「K 線拉取」「K 線串流」「K 線圖」與「BROKER 管理」。標的列表為**上下兩張表**：上方為
+清單在下，默認富途）、「K 線拉取」「K 線串流」（串流頁在表格上方畫出 K 線圖，見下）、「K 線串流（多週期）」
+（3×3 九格同時串流，下方無表格，見 §17）與「BROKER 管理」。標的列表為**上下兩張表**：上方為
 該券商自帶的欄位與格式（`raw=True`），下方為統一格式，兩張表同一時刻用同一篩選條件，可直接對照同一份資料在
 轉換前後的样子。
 
@@ -550,7 +587,8 @@ python brokery_gui/run.py     # 閘道地址與金鑰讀自 .env 的 API_HOST/AP
 ```
 
 - **界面與文字分離**：七個 `.ui` 檔（`main_window`、`accounts_page`、`symbols_page`、`kline_pull_page`、
-  `kline_stream_page`、`kline_chart_page`、`brokers_page`）在運行時由 QUiLoader 載入，檔內不含任何文字；顯示文字
+  `kline_stream_page`、`kline_grid_page`、`brokers_page`）在運行時由 QUiLoader 載入，檔內不含任何文字；多週期頁連
+  週期下拉框都冇（週期由該券商聲明的 `stream_ktypes` 生成嘅按鈕決定），故檔內亦無該類控件；顯示文字
   一律按鍵取自 `locales/<語言>.json`。分頁以 object name 辨認（不按 index 硬編碼），故增減分頁不會錯頁觸發。
 - **三種語言即時切換**：繁體中文／简体中文／English 各一個 `.json`（三者鍵集合一致），頂欄切換即重貼標籤，不需
   重建窗口、亦不重新取數；缺譯時返回鍵名本身，不憑空造一句湊數。
@@ -571,16 +609,43 @@ python brokery_gui/run.py     # 閘道地址與金鑰讀自 .env 的 API_HOST/AP
   計時。標的頁的定時更新預設只重讀離線快照，勾上「自動向券商重拉」（預設關閉）才改為向券商取清單。
 - **兩張表順序取數**：同一篩選條件先取統一格式、再帶 `raw=1` 取一次（同一閘道持有各券商連線，IB 只容許一個
   client id，故不併發）；兩張表各自顯示自己的失敗原因，舊回應不會蓋過已改變的篩選條件。
-- **K 線三頁**：控制列與 Web UI 同一口徑（標的預設 `HK.HSImain`、週期由 `/capabilities` 的 `ktypes` 填充並預設
-  `1m`、根數預設 1000 上限 1000、券商只列生效者）；表格欄位即 `K_COLUMNS` 且按時間反序（最新在最上），並按來源
-  統計根數。三個 K 線頁各持一個序列容器（控件參照 + `chart.BarStore` + 串流客戶端），取數路徑只有一條。
+- **K 線兩頁**：控制列與 Web UI 同一口徑（標的預設 `HK.HSImain`、週期由 `/capabilities` 的 `ktypes` 填充並預設
+  `1m`、根數預設 1000 但**可任選數字**（上限 100000；實際可得根數取決於該來源在該週期的可取深度，不足時
+  閘道的 `message` 會點名該來源的實際深度）、券商只列生效者）；表格欄位即 `K_COLUMNS`，**列出返回的全部行**
+  （不做「只列最近 N 行」的截斷）並按時間反序（最新在最上），另按來源統計根數。兩個單格 K 線頁各持一個序列容器
+  （控件參照 + `chart.BarStore` + 串流客戶端），其上限跟隨本次請求的根數（`BarStore.set_limit`），故取 3000 根
+  不會被裁返 1000 根；取數路徑只有一條。多週期頁（§17）唔屬呢個單格模型：一格一份 `BarStore`，但全頁只有一條
+  串流客戶端。
 - **K 線串流**：`brokery_gui/stream.py` 以 `QWebSocket` 對 `/stream`（桌面端不直接連券商，理由同取數），收到的事件
   轉成同名信號，不在客戶端解讀、合併或重排資料；`update` 一律經 `chart.BarStore` 合併（同 `ts` 覆蓋、保留最新
-  N 根），同券商在途時「訂閱」鎖定（第二條會被 `stream_busy` 拒），結束即解鎖（換參數要重連）。
-- **K 線圖**：`QWebEngineView` 載入 `brokery/static/chart_host.html`，只交一份 DataFrame 經 `brokery.chart.render_js`
-  注入，座標軸與 series 全由那份共用的 JS 決定（用 WebEngine 而非 QtCharts，正是為了自定義指標在三個界面零翻譯）。
-  视图惰性建立（首次進入該分頁才載入）；無顯示環境（offscreen、部分 Docker 鏡像）起不來時在該頁明確說明原因，
-  下方表格照常填充並反序，功能不會半途而廢。
+  N 根）。按「訂閱」即先向 `/kline` 取歷史、歷史已在圖上才建立連接（取不到歷史即不訂閱，不留一張只有實時 bar 的
+  圖）；結束時連該條連接一併丟掉，故換參數重按「訂閱」不會被上一條連接擋住。
+- **訂閱咗就唔好再訂閱，直接串流**：該串流執行緒要到時窗走完才停下——按「停止」只是提前收尾。故「停止」後再按
+  「訂閱」同一份請求（同簽名）照樣送到閘道，由它接手仍在推送的串流，即刻繼續收（`subscribed` 帶 `resumed`）；
+  界面唔會預先記低 `closed` 帧的 `release_in`（那只會白等一段根本唔使等嘅時間）。換咗參數即係另一條串流，同一
+  券商同一週期照樣並行多條，兩邊唔使互相等（Web UI 同時訂閱同簽名即加入呢條串流，各收同一份 `update`，其中一邊
+  「停止」或收線都唔影響呢邊，見 §12）。舊的 `kline.quota_wait` 倒數、`retry_stream` 與 `kline.wait_cancelled`
+  已一併刪除（再無名額可等）。被拒只剩協定錯誤（`ktype_unsupported`、`broker_disabled`、`bad_request`）：
+  `_on_stream_error` 把閘道點名的原因原樣以警告色顯示，唔自造原因亦唔代用戶重送訂閱（會話參數由用戶改，界面自己
+  重送只會出現用戶看不見嘅訂閱），按鈕亦唔解鎖，由用戶撳「停止」收返呢條連接再改參數。
+- **K 線圖在表格上方，且是可重用元件**（K 線串流頁）：`brokery_gui/chart_view.py` 的 `KlineChart` 把「圖表容器 +
+  提示列 + 惰性 `ChartView` + 狀態提示」封成一個物件，界面只傳該頁的 `chartBox`／`chartNoteLabel` 與翻譯器；每個
+  有 `chartBox` 的分頁各持一個（`pane.chart`，由該頁有無該容器決定，無圖的分頁為 `None`），不再由主窗口持有單一
+  視圖，日後任何頁面要加圖即照這三行接駁。渲染只交一份 DataFrame 經 `brokery.chart.render_js` 注入，座標軸與
+  series 全由那份共用的 JS 決定（用 WebEngine 而非 QtCharts，正是為了自定義指標在三個界面零翻譯）。圖與表格讀
+  同一份 `BarStore`，故根數與時間範圍永遠一致；**渲染時傳 `start: 0`，即本次所請求的根數全部喺圖上**（唔再只顯
+  最近幾十根；`dataZoom` 照可再收窄，`chart.js` 的 `DEFAULT_START` 只是省略該項時的預設；Web UI 同樣傳
+  `start: 0`，兩個界面所請求的根數都全部喺圖上）。
+  視圖惰性建立（首次進入該分頁才載入）；載入提示由視圖的載入狀態驅動（`ChartView.on_state`）：未就緒顯示
+  「正在載入圖表…」、就緒即清走、起不來才顯示原因，不由界面猜，換語言時由元件自己重貼。視圖以 `Expanding` 並帶
+  stretch 加入佈局，故圖佔盡圖表區的高度，提示列不與圖平分空間；圖表區與下方表格按 `.ui` 的 `verstretch` 3:2
+  分配，故圖佔內容的一半以上。無顯示環境（offscreen、部分 Docker 鏡像）起不來時，下方表格照常填充並反序，功能
+  不會半途而廢。
+- **多週期頁的圖表容器**（`brokery_gui/grid_view.py`）：`GridView` 照 `KlineChart` 同一口徑（惰性 `ensure()`、載入
+  提示由視圖狀態驅動、起不來顯示原因而唔係空白），但載嘅係 `brokery/chart.py` 的 `grid_page()`，格子由
+  `BrokeryGrid` 喺 `QWebEngineView` 內生成。週期按鈕只帶 `1m`／`day` 呢類 token，完全唔涉及語言，故換語言唔使重建
+  格子。按鈕嘅點擊靠輪詢 `takePicks()` 交回 Python（`QWebChannel` 喺 offscreen 載 `qrc:///qtwebchannel/qwebchannel.js`
+  即 segfault，已實測），只在該分頁可見且載體頁已就緒時先輪詢，唔喺後台空轉（見 §17）。
 - **BROKER 管理**：以開關列出全部券商（未配置者不可勾並顯示原因，那不是開關能改的事），「應用」一次交齊完整
   生效名單，直接以回應重畫，並重讀 `/capabilities` 令各頁下拉框即時去掉被停用者。
 - **背景取數交回 GUI 執行緒**：取數在 `QThread` 進行，但 PySide6 中連到普通可呼叫物件的信號會在**發射**執行緒
@@ -652,13 +717,71 @@ chart.render_js(bars, ktype="1m")           # 可直接交 runJavaScript / <scri
           {xAxis: r.start_ts, yAxis: r.start_price},
           {xAxis: r.end_ts, yAxis: r.end_price}]] } }));
   ```
+- **一圖一實例（`BrokeryChart.create(el, opts)`）**：所有 K 線圖走同一個實例模組，實例自己記住縮放與平移的
+  範圍，故串流每次 `update` 都不會把畫面跳返原位；`update`/`overlays`/`reset`/`destroy` 為界面唯一需要的動作，
+  `opts` 為該次輸入的一部分（縮放範圍只作初始值，圖形規格 `ktype` 決定 x 軸的時間格式，故**每次渲染都要交**，
+  只喺開圖時給一次的話界面換週期後 x 軸仍照舊格式）。`render()`／`resizeAll()` 只是舊簽名的外殼（同一元素重入
+  即取返同一個實例，換標的不會疊加舊圖），既有頁面不必改呼叫口徑。
+- **緊湊形態與多格由同一份規格提供**（`opts.compact` + `brokery/static/chart_grid.js`，`window.BrokeryGrid`）：
+  `compact` 時 `option()` 只生成一個 grid 與一條 candlestick series（唔畫成交量格、唔畫右上角現價大字，現價虛線
+  保留但 label 縮細），非 `compact` 逐項完全唔變，故既有頁面與斷言照過。`BrokeryGrid.build(el, {ktypes, onPick})`
+  為每個 ktype 建一格（上方一排水平週期按鈕 + 一個圖表 div），每格一個獨立實例（即上面嗰條），`set(i, payload,
+  ktype)` 只重畫一格，`resizeAll()` 一次過涵蓋全部格子。**頁內零文字**：按鈕只帶 `1m`／`day` 呢類 ktype token，
+  所以換語言唔使重建格子。撳按鈕嘅點擊記低 `[格, 週期]`：Web UI 用 `onPick` 即時回調，桌面 GUI 用 `takePicks()`
+  輪詢取走（`QWebChannel` 喺 offscreen 載 `qrc:///qtwebchannel/qwebchannel.js` 即 segfault，已實測）。Python 側只多
+  幾個入口：`chart.grid_page()`（載體頁）、`grid_js(ktypes)`、`grid_set_js(index, frame, ktype)`、
+  `grid_note_js(index, text)`、`grid_picks_js()`。
+- **交互與標註一律由這份規格提供，界面不寫一行**：滾輪縮 X 軸、**Shift+滾輪只縮 Y 軸**（單軸）、拖曳左右平移、
+  **雙擊即復原**；**現價水平線**與**右上角現價大字**一律取序列最後一根的收市價，故串流更新時兩者自己移動，界面
+  不需要另外傳值；大字只在現價真的改變時閃一次（首次載入與重複繪製同一價格不閃；計時由實例做，因本圖
+  `animation: false`）；最新一根 K 線右側留位（現價數字即疊於該右側留白之上），兩個 y 軸不繪水平網格線。
+  （ECharts 的 `zoomOnMouseWheel: true` 唔理修飾鍵，且 zrender 先註冊 wheel 並切斷後續 listener，故單軸縮小要由
+  實例在 **capture** 階段自己分派 `dataZoom`。）
 - **序列合併規則三處同一口徑**（`chart.BarStore` 與 `chart.js` 的 `store()`）：key=(code,ts)、同 `ts` 以新到者
   覆蓋、每個代碼只保留最新 N 根、內部一律 ts 升序。串流的 `update` 只帶最近 `count` 根，直接取代會把 1000 根
-  歷史縮返最近幾根，故一律合併。
+  歷史縮返最近幾根，故一律合併。N 由 `set_limit()`／`setLimit()` 跟界面請求的根數調整（寫死時取 3000 根會被
+  裁返 1000，即「1000條只顯幾十條」的另一半成因）。
 - **「最新在最上」只屬顯示層**：`rowsDesc()`／`desc()` 只在表格顯示時反序，存放與圖表一律升序，故跨券商對齊
   與指標計算不受界面排序影響。
 - **離線可用**：`echarts.min.js` 為本地 vendor（已無 CDN），故 GUI 與 Docker 鏡像在無外網時照樣畫到圖。
-  閘道與 Web UI 的 `/static/{name}` 只放行白名單兩檔，路徑不可走到 `brokery/static/` 之外。
+  閘道與 Web UI 的 `/static/{name}` 只准取 `brokery/static/` 內的檔案（路徑不可走到該目錄之外，否則 404
+  `static_missing`），三個界面載的是同一份。
+
+### 17. 多週期 K 線與連線數（實測結論）
+
+同一個代碼可同時用多個週期，每個週期就是一次正常的取數與訂閱，界面不需要為「多週期」寫任何特殊處理：
+
+```python
+bk.get_kline("HK.HSImain", ktype="5m", count=200)                     # 各帶自己的 ktype
+bk.stream_kline("HK.HSImain", ktype="5m", count=200, seconds=..., on_update=...)   # 一個週期一份訂閱
+```
+
+- **週期順序只有一份定義**：`brokery/brokers/base.py` 的 `KTYPE_ORDER`（即 `BAR_MINUTES` 的鍵順序：1m、3m、5m、
+  15m、30m、60m、day、week、month，正好九個）。`/capabilities` 照呢份返回，三個界面的週期下拉框一律照
+  佢排列，唔准自己排序或憑空補週期。
+- **能並行的週期由適配器聲明**（`SymbolBroker.stream_ktypes`）：futu 為其全部週期、IB 為其全部 bar size，
+  tiger／webull 只支援 `1m`（故該兩家不會出現多週期）。不支持的組合由適配器聲明、由 `core` 明確拒绝，不靜靜
+  改用另一個週期。
+- **同一條券商連線可同時串流多個週期，同一週期亦可並行多條**（futu）：`set_handler` 每條連線只有一個推送回呼，故以
+  `_KlinePushRouter` 按推送行上的 `k_type` 分派給各週期的接收器，並以引用計數管理 start/stop；上游訂閱按
+  **（代碼, 週期）引用計數**，同一週期的第二份照樣並行，最後一份結束才 `unsubscribe`（舊行為「同週期第二份即拒」
+  已移除，故並行時不會互相蓋走訂閱）。實測同一條連線並行 1m/3m/5m，各週期取到自己週期的 bar（`ts` 間距分別為
+  60/180/300s 的整數倍），且沒有另開連線。
+- **連線數的結論**：券商端的訂閱數唔可以少過週期數（每個週期係上游一份獨立訂閱），但**可以共用同一條券商
+  連線**；真正會排塞的是界面→閘道那一層——瀏覽器對同一來源只得約 6 條 HTTP/1.1 併發連線。故一個界面的多個
+  訂閱一律**只開一條** `/stream`（一條連接上逐週期 `subscribe`，每一幀帶 `broker`/`ktype`，`update` 按 `ktype`
+  分派），閘道的串流登記亦由「每券商一名額」改為按
+  **請求簽名（券商, 週期, 代碼, 根數, 複權, raw）** 計，`stop` 可按 `broker` 或 `ktype` 只收其中一部分。換週期即只
+  重取該週期的歷史、並只退該週期的串流，其餘訂閱不受影響。
+- **多週期界面（「K 線串流（多週期）」，Web UI 與桌面 GUI 同一頁）**：一格一週期，格子數與順序即所選券商聲明的
+  `stream_ktypes`（照 `KTYPE_ORDER` 排列）——futu 聲明九個，正好 3×3；IB 得部分；tiger／webull 只得一格。界面唔會
+  憑空補出該券商不支持的週期，所以唔會見到八格同時報 `ktype_unsupported`。每格上方一排水平週期按鈕，內容同樣係
+  呢份聲明嘅清單（按鈕只帶 `1m`／`day` 呢類 token，語言中性，換語言唔使重建格子）。流程照單格串流頁：先逐格取歷史
+  （根數為控制列一個共用輸入，預設 300；九格 × 1000 根會令富途走九次分頁路徑，明顯慢），全部返回先至喺**一條**
+  連接上送九個 `subscribe`；`update` 按 `ktype` 只重畫對應格；一個「開始／停止」管全部格子（逐格只有週期按鈕），
+  換某一格嘅週期即只重取嗰格、只退該週期的串流，若該舊週期仍有別格顯示則唔退（退咗會斷咗嗰格嘅推送）。
+  格子與圖表規格由 `brokery/static/chart_grid.js`（`window.BrokeryGrid`）一份提供，兩邊讀到嘅逐 byte 相同；下方無
+  DataFrame，故呢頁無表格、無 `columns` 渲染。
 
 ## 設計前提（實測結論，改動前請先讀）
 - 股票清單出自富途、Tiger 與 Webull（富途 `get_stock_basicinfo` 一次取全、Tiger `get_symbol_names`
@@ -745,20 +868,21 @@ python brokery/acceptance/run_list_symbols.py      # 四家 × 三品種的標�
 python brokery/acceptance/run_list_filter.py       # 清單的 broker 與 markets 兩個參數（core 調度口徑）：只向一家取、unknown_source／type_unsupported、markets 按行過濾、empty_list、省略 markets 用預設市場、一家失敗仍返回別家資料；raw=True 時不做按行的市場過濾（原生行無 market 欄位），市場範圍一律由參數／種子保證（以存根券商進行，不需任何連線）
 python brokery/acceptance/run_raw_frames.py        # raw=True 的契約（以存根適配器進行，不需任何連線）：信封仍三鍵且 data 即原生欄位、非 raw 的 COLUMNS／K_COLUMNS／ACCOUNT_COLUMNS 不變、raw 跳過去重與統一欄位行過濾但取數範圍不變、多來源欄位為首見聯集、失敗時空表無欄位、NativeBars 與 BarMerger 對外語義一致
 python brokery/acceptance/run_broker_prefs.py  # 券商開關喜好（BROKER 管理，見 §15）：以存根適配器與臨時資料目錄核對喜好檔只記被停用者、檔不存在或不可讀即全部生效、寫入為原子、生效集合為 API_SOURCES ∩ 喜好、被停用者不經過任何動作（get_kline／stream_kline／list_stocks／get_accounts／get_brokers 一律 broker_disabled）、與 unknown_source／no_source 清楚分開、get_broker_prefs 列出全部券商（未配置者 configured=False）、set_broker_enabled 即時生效不需重建、core 不讀檔故不傳 `disabled` 即照 `.env` 取齊全部券商、檔內多餘的名字無害（不需任何連線）
-python brokery/acceptance/run_chart_spec.py    # 共用圖表層（見 §16）：payload() 保持 ts 升序且 NaN/Inf 轉 null、overlay_rows() 欄位即 OVERLAY_COLUMNS、render_js() 可直接執行、static_file() 不可走到 static 之外、x 軸為原始 ts、option() 為 candlestick + volume 兩條 series、按 kind 分派（內置 zone／line，register 後多出對應 series）、未註冊的 kind 被跳過、store() 合併（key=(code,ts)、同 ts 以新到者覆蓋、每代碼只保留最新 N 根）、rowsDesc()/desc() 只屬顯示層；以 Chromium 核對 render() 可重用與 timeText（不需券商連線）
+python brokery/acceptance/run_chart_spec.py    # 共用圖表層（見 §16）：payload() 保持 ts 升序且 NaN/Inf 轉 null、overlay_rows() 欄位即 OVERLAY_COLUMNS、render_js() 產生可直接執行的呼叫、static_file() 不可走到 static 之外、frame() 把 BarStore 還原成 DataFrame（故界面的圖與 DF 同一份序列）、x 軸為原始 ts、option() 為 candlestick + volume 兩條 series、內置 zone 的 markArea（端點喺範圍外即貼最近一根）、register 後多出對應 series、未註冊的 kind 被跳過、store() 合併（key=(code,ts)、同 ts 以新到者覆蓋、每代碼只保留最新 N 根）並還原原欄位、setLimit() 令上限跟界面請求的根數（取 3000 根唔會被裁返 1000，調低即裁走最舊）、rowsDesc()/desc() 只屬顯示層；以 Chromium 核對本地 echarts 載入（無 CDN）、render() 真畫到嘢且同一實例可重用、render() 每次都帶規格（換週期後 x 軸格式跟住改，只喺開圖時給一次即永遠照舊週期）、create() 一圖一實例（兩張圖互不影響、縮放範圍跨 update 保持）、真滾輪縮 X 軸／Shift+滾輪只縮 Y 軸／拖曳平移／雙擊復原、現價線取序列最後一根並跟住串流走、destroy() 釋放實例、timeText 日線只到日期；`compact` 時 `option()` 只一條 series 一個 grid 無現價大字（非 `compact` 逐項照舊）、`BrokeryGrid` 九格九實例互不影響／撳按鈕只重畫一格並只上報 `[格, 週期]`／`takePicks()` 取走即清空／`resizeAll()` 涵蓋全部格子；`chart.py` 的 `grid_page()/grid_js()/grid_set_js()/grid_note_js()/grid_picks_js()` 產生可在載體頁直接執行的呼叫（不需券商連線）
 python brokery/acceptance/run_get_kline.py          # 同一 code 經 futu/ib/tiger 取 K 線並核對對齊，另核對 Webull 的取數與明確報錯（需 OpenD + IB；Tiger 需私鑰）
 python brokery/acceptance/run_get_kline.py HK.00700 week 120   # 指定代碼 / ktype / bar 數
+python brokery/acceptance/run_futu_kline.py       # 富途 K 線的根數口徑（不需 OpenD，以存根 _ctx）：各週期足數、兩段去重、起日折半、深度不足會點名
 python brokery/acceptance/run_align_kline.py        # 四家的前復權以 futu 為準逐根並列，量化各家與它的偏差（需 OpenD + IB + Tiger + Webull；美股代碼會跳過 Webull 並打印 WARN）
 python brokery/acceptance/run_align_kline.py US.NVDA day 120   # 指定代碼 / ktype（日內或日線）/ bar 數
-python brokery/acceptance/run_stream_kline.py          # 一條連線同時串流多個代碼（futu/ib/tiger/webull），核對回呼規格與 seconds 約束（需 OpenD + IB；Tiger 需私鑰）
+python brokery/acceptance/run_stream_kline.py          # 一條連線同時串流多個代碼（futu/ib/tiger/webull），核對回呼規格與 seconds 約束；另核對多週期並行（同一連線並行多個週期、各週期仍取到自己週期的 bar（ts 間距為該週期的整數倍）、同週期的第二份照樣並行（上游訂閱按（代碼,週期）引用計數：並行期間不退訂閱、全部結束才退一次）、多個週期共用同一條連線；可並行的週期一律取自適配器聲明的 stream_ktypes，只聲明 1m 者明確跳過）（需 OpenD + IB；Tiger 需私鑰）
 python brokery/acceptance/run_stream_kline.py US.NVDA 5m 50 120   # 指定代碼（逗號分隔可多個）/ ktype / bar 數 / 秒數
 python brokery/acceptance/run_kline_matrix.py      # 品種 × 券商矩陣：品種推斷、能力閘（type_unsupported）、復權只對股票有效、指數跨券商對齊；raw=True 的根數與收市價與統一格式逐根相同、時間欄位為該券商自己的寫法（需 OpenD + IB + Tiger）
 python brokery/acceptance/run_get_accounts.py      # 四家戶口與資金：統一欄位、只列真實且已啟用的戶口、幣種有無填到、acc_type/currency/broker 三個參數的邊界、詞表外的戶口性質（IB individual）在篩選時點名說明；每家再以 raw=True 取一次，核對欄位即該券商自帶的戶口記錄、不支持的幣種仍明確報錯、明確 acc_type 一律拒绝（需 OpenD + IB + Tiger + Webull）
 python brokery/acceptance/run_get_brokers.py   # 四家連線狀態與延遲：統一欄位、延遲為正數且戶口數與 get_accounts 一致、連不上為 NaN 並附原因、並行探測、參數邊界（需四家後端在線）
-python brokery/acceptance/run_api.py           # 閘道本身：未設金鑰拒絕啟動、HTTP/WS 鑑權、返回信封與欄位契約、JSON 取值口徑、業務失敗原樣透傳、三個清單接口的 markets／broker 原樣透傳為統一前綴（含 markets 省略時不再拋 TypeError 的回歸檢查）、`/codes/meta` 返回快照元資料欄位（即 CODES_META_COLUMNS）與 `/codes/refresh` 透傳更新結果、三個 /codes* 端點按 broker 各讀一檔且兩檔互不覆蓋、六個取數端點與 `/stream` 的 `raw` 原樣透傳、串流協定與日誌遮罩、`/brokers/prefs` 讀出全部券商（含未配置者）與 `/brokers/prefs/update` 以完整名單寫入並即時生效（被停用者其後一律 `broker_disabled`、`/capabilities` 不再列它、全部停用時為 `no_source` 並點名被停用者）、`/capabilities` 的 `ktypes` 即 `BAR_MINUTES`、`/health` 回報生效來源與喜好檔路徑、`/static/{name}` 只放行白名單兩檔且不需金鑰（不需券商連線）
+python brokery/acceptance/run_api.py           # 閘道本身：未設金鑰拒絕啟動、HTTP/WS 鑑權、返回信封與欄位契約、JSON 取值口徑、業務失敗原樣透傳、三個清單接口的 markets／broker 原樣透傳為統一前綴（含 markets 省略時不再拋 TypeError 的回歸檢查）、`/codes/meta` 返回快照元資料欄位（即 CODES_META_COLUMNS）與 `/codes/refresh` 透傳更新結果、三個 /codes* 端點按 broker 各讀一檔且兩檔互不覆蓋、六個取數端點與 `/stream` 的 `raw` 原樣透傳、串流協定與日誌遮罩、串流按**請求簽名**（券商,週期,代碼,根數,複權,raw）登記（一條 WS 同時訂閱多個週期、每一幀帶 broker/ktype、`stop` 可按 broker 或 ktype 只收部分、多週期界面（3×3 九格）的實際形態：一條連接一次過訂閱九個週期、九份 `update` 各自帶自己嘅 `ktype`（界面靠呢個欄位分派到對應嘅格）、`stop` 只帶一格嘅 ktype 時該格回 `closed` 而其餘八格照收推送、再送一次唔帶 ktype 的 `stop` 即逐個 `closed` 收齊剩低八格、已停止的訂閱不被第二次 stop 重複發 closed、「停止」後同一份請求再訂閱即接手仍在推送的串流（`resumed`，接手後照樣收到其後的 `update`）、同一份請求由**兩條連接同時訂閱**時向券商只訂閱一次且兩邊各收到同一份 `update`（`subscribed` 帶 `shared`）、其中一方 `stop` 只退出自己而另一條照收（不會另起一次訂閱）、同一條連接重送同一份請求為冪等、**換了參數即另一條串流，同一券商同一週期可並行多條**（同週期兩格不同代碼各自訂閱一次並各推自己代碼、換根數即另起一條、`stop` 只帶 ktype 時逐條各發一份 `closed`），不再返回 `stream_busy`）、`/brokers/prefs` 讀出全部券商（含未配置者）與 `/brokers/prefs/update` 以完整名單寫入並即時生效（被停用者其後一律 `broker_disabled`、`/capabilities` 不再列它、全部停用時為 `no_source` 並點名被停用者）、`/capabilities` 的 `ktypes` 即 `BAR_MINUTES`、`/health` 回報生效來源與喜好檔路徑、`/static/{name}` 不需金鑰且內容即 `brokery/static/` 那一份、目錄外與不存在者明確 404（不需券商連線）
 python brokery/acceptance/run_ui.py            # dashboard 客戶端：以存根閘道 + Chromium 核對腳本無語法錯誤、頂欄四家指示、金鑰記憶與回填、探測只由載入與按鈕觸發、兩頁的自動更新以秒為單位且預設 0 時空轉完全不打請求（設 1 秒即定時重取、改回 0 即停止）、按來源汇总並點名無返回者、標的頁區分「不提供／無返回」、標的頁不再有「統一格式輸出」面板、離線 CODES 不分區而以單一表格顯示且欄位順序即接口原樣、該家快照一行顯示行數與距今時間且過舊以警告色提示、「更新 CODES」只向 `/codes/refresh` 送出且不带市場參數、換券商即改讀該家那一檔（顯示的只是該家的行數）、完成後原樣顯示結果並重讀快照與表格、搜尋零結果且快照過舊時提示按「更新 CODES」、K 線頁預設 `HK.HSImain`／`1m`／1000 根且券商為生效的第一家、圖表由 `/static/chart.js` 與本地 echarts 畫出（已無 CDN）、下方表格按時間反序、`update` 只帶最近幾根時與已拉取的序列合併而不縮減行數（不需券商連線；需 `playwright install chromium`，未裝即跳過）
-python brokery/acceptance/run_webui.py         # Web UI：以存根閘道核對轉發原樣透傳信封與金鑰只在服務端、金鑰不符與閘道不可達均明確報錯、`/api/kline` 帶 `code/ktype/count/broker` 轉到 `/kline`、`/api/brokers/prefs`（讀）與 `/api/brokers/prefs/update`（寫，省略參數即交空名單而非全部）原樣透傳、`/static/chart.js` 與 `/static/echarts.min.js` 即 `brokery/static/` 那一份（只有一份）、`WebSocket /ws/stream` 以 `websockets.serve` 起上游存根核對訂閱與 `update` 雙向原樣透傳且上游不可達時返回明確 `error`；以 Chromium 核對菜單六項、欄位即 ACCOUNT_COLUMNS、千分位與破折號、按來源統計；標的頁先取能力聲明再取清單、券商選項由聲明填充且默認 futu（不提供該品種者標註且不可選）、表格欄位即 COLUMNS、市場選項只由返回的 market 填充、選市場與轉類型均向對應接口再取一次、離線 CODES 的讀取與更新均按券商原樣轉發（`/codes?broker=` 只讀該家那一檔、`/codes/refresh?broker=` 不带市場參數）、該家快照一行顯示行數與距今時間且過舊及上次更新失敗以警告色提示、換券商即改讀該家那一檔（不含別家的行數）、更新結果原樣顯示（含各品種增減）、兩頁的自動更新以秒為單位且預設 0 時完全不打請求、標的頁定時更新預設只重讀離線快照（勾上「自動向券商重拉」才向券商取清單）、四頁預設值（`HK.HSImain`／`1m`／1000，上限 1000）與表格按時間反序、串流 `update` 合併後不縮返已取的歷史、BROKER 管理頁列出全部券商（含未配置者）且開關一改即重讀能力聲明並重畫所有券商下拉框（不需券商連線；未裝 Chromium 即跳過）
-python brokery/acceptance/run_gui.py           # 桌面 GUI（brokery_gui）：以存根閘道 + Qt 離屏核對七個 .ui 檔內不含任何文字、三種語言各一個 .json 且鍵集合一致（現為 73 鍵）、切換即時生效且不重建窗口、缺譯返回鍵名、表格欄位即 ACCOUNT_COLUMNS／COLUMNS、缺失值破折號與資金欄千分位、按來源統計、券商選項由能力聲明填充且默認 futu（不提供該品種者標註且不可選）、市場選項只由返回的 market 填充、選市場與轉類型均向對應接口再取一次、標的列表為上下兩張表（上表欄位即閘道 raw=1 返回的該券商自帶欄位、下表仍為 COLUMNS）、同一篩選條件順序取兩次（先統一格式、再同參數 `raw=1`）且舊回應不蓋過新選擇、raw 取不到只寫自己的標籤、該家離線快照一行顯示行數與距今時間且過舊及上次更新失敗以警告色（非錯誤色）提示、「讀取離線 CODES」只向 `/codes?broker=` 讀該家那一檔、「更新離線 CODES」只向 `/codes/refresh?broker=` 送出且不带市場參數並重讀該行、換券商即改讀該家那一檔、切換語言時該行一併重貼、兩頁的自動更新以秒為單位且預設 0 時完全不打請求、標的頁定時更新預設只重讀離線快照（勾上「自動向券商重拉」才向券商取清單）、閘道不可達與金鑰不符均明確報錯、六個分頁齊全且標題由字庫按鍵取（轉語言後六個標題全部重貼、不重建窗口）、三個 K 線頁預設 `HK.HSImain`／`1m`／1000（上限 1000）、K 頁券商下拉框只列生效者（不像標的頁按品種過濾）、表格欄位即 `K_COLUMNS` 且按時間反序（存放仍為升序，反序只屬顯示層）、訂閱與停止的按鈕狀態、`update` 經序列合併（同 ts 覆蓋、已取的歷史不縮返最近幾根）、K 線圖頁惰性建立 `ChartView`（無顯示環境起不來即說明原因而非留空白，DF 照常填充並反序）、只交一份 DataFrame 給那份共用的 `chart.js`、BROKER 管理頁列出全部券商且開關一改即重讀能力聲明、背景取數的回應經一個屬主執行緒的轉接交回 GUI 執行緒（PySide6 中連到普通可呼叫物件的信號在發射執行緒執行，直接碰 `runJavaScript` 即崩潰）、直接啟動 `brokery_gui/run.py` 核對窗口會存活（不需券商連線，亦不需顯示器）
+python brokery/acceptance/run_webui.py         # Web UI：以存根閘道核對轉發原樣透傳信封與金鑰只在服務端、金鑰不符與閘道不可達均明確報錯、`/api/kline` 帶 `code/ktype/count/broker` 轉到 `/kline`（週期與根數省略時不自訂第二套預設）、`/api/brokers/prefs`（讀）與 `/api/brokers/prefs/update`（寫，省略參數即交空名單即全部停用）原樣透傳、被停用者不再出現在 `/api/capabilities`、`/static/chart.js` 與 `/static/echarts.min.js` 即 `brokery/static/` 那一份（只有一份，不存在者明確 `static_missing`）、`WebSocket /ws/stream` 以 `websockets.serve` 起上游存根核對訂閱與 `update` 雙向原樣透傳且上游不可達時返回明確 `error`；以 Chromium 核對選單為六項、欄位即 ACCOUNT_COLUMNS、千分位與破折號、按來源統計；標的頁先取能力聲明再取清單、券商選項由聲明填充且默認 futu（不提供該品種者標註且不可選）、表格欄位即 COLUMNS、市場選項只由返回的 market 填充、選市場與轉類型均向對應接口再取一次、離線 CODES 的讀取與更新均按券商原樣轉發（`/codes?broker=` 只讀該家那一檔、`/codes/refresh?broker=` 不带市場參數）、該家快照一行顯示行數與距今時間且過舊及上次更新失敗以警告色提示、換券商即改讀該家那一檔（不含別家的行數）、更新結果原樣顯示（含各品種增減）、兩頁的自動更新以秒為單位且預設 0 時完全不打請求、標的頁定時更新預設只重讀離線快照（勾上「自動向券商重拉」才向券商取清單）、兩個 K 線頁預設值（`HK.HSImain`／`1m`／1000，根數可任填、上限 100000，與桌面 GUI 一致）與 DF 按時間反序、**DF 列出接口返回的全部行（120 行的存根返回 120 行，不做「只列最近 N 行」的截斷）**、`count=3000` 原樣送到閘道且合併器上限跟住 3000（唔會裁返 1000）、開圖傳 `start: 0` 即圖上的 bar 數即合併後的根數、換週期後 x 軸格式跟住改（日線只到日期）、K 線串流頁在 DF 上方以本地 echarts 畫出 canvas 且圖與表格同一份序列（表格行數即合併後的根數）、串流 `update` 合併後不縮返已取的歷史、**同一券商同一週期可並行多條**（多週期頁已佔住 `futu/1m` 時「K 線串流」頁照樣訂閱同一券商同一週期：2 條連接、唔被拒、唔使等；存根以 `/push` 代替券商推送，兩條各自收到（`pushed:2`）並各 +2 根，互不取代；停其中一條只收返該條（`pushed:1`），另一條照舊串流並繼續收推送，已收返嘅連接唔再被填）、協定錯誤（存根對 `HK.BAD` 返回 `ktype_unsupported`）原樣呈現且唔被自動重送訂閱（被拒後撳「停止」即收返呢條連接並解鎖按鈕）、訂閱只開**一條**上游 WebSocket 且內容與閘道協定相同、一律先取歷史才建立串流（`/kline` 在 `subscribe` 之前；取不到歷史即不訂閱並清走舊標的的序列）、BROKER 管理頁列出全部券商（含未配置者）且開關一改即重讀能力聲明並重畫所有券商下拉框；多週期頁：`/static/chart_grid.js` 與桌面 GUI 讀到嘅逐 byte 相同（只有一份）、格子數與順序即該券商聲明的 `stream_ktypes`（futu 九格、IB 按未排序嘅聲明原樣排列、tiger 一格）、每格一排水平週期按鈕且只有該格自己高亮、下方無 DF、根數為一個共用輸入且預設 300、九格逐格先取歷史（`/kline` 九次）先開**一條** `/ws/stream` 送九個訂閱、`update` 按 `ktype` 只重畫對應格、每格緊湊規格（一格一 grid 一 series）、換一格只重取嗰格並只送帶該 ktype 的 `stop`（唔再開第二條連接）、該舊週期仍有別格顯示即同簽名，唔退它、換返一個已無格子顯示的週期即補訂閱、一個「停止」只送一次裸 `stop` 並就地提示已停止（唔依賴閘道的 `closed` 帧：瀏覽器一 `close()` 代理即拆上游）、換券商即按新聲明重建格子（不需券商連線；未裝 Chromium 即跳過）
+python brokery/acceptance/run_gui.py           # 桌面 GUI（brokery_gui）：以存根閘道 + Qt 離屏核對六個頁面 .ui 檔齊全且檔內不含任何文字（多週期頁連週期下拉框與表格都冇）、三種語言各一個 .json 且鍵集合一致（現為 74 鍵）、切換即時生效且不重建窗口、缺譯返回鍵名、界面用到的鍵三種語言均無缺譯、表格欄位即 ACCOUNT_COLUMNS／COLUMNS、缺失值破折號與資金欄千分位、按來源統計、券商選項由能力聲明填充且默認 futu（不提供該品種者標註且不可選）、市場選項只由返回的 market 填充、選市場與轉類型均向對應接口再取一次、標的列表為上下兩張表（上表欄位即閘道 raw=1 返回的該券商自帶欄位、下表仍為 COLUMNS）、同一篩選條件順序取兩次（先統一格式、再同參數 `raw=1`）且舊回應不蓋過新選擇、raw 取不到只寫自己的標籤、該家離線快照一行顯示行數與距今時間且過舊及上次更新失敗以警告色（非錯誤色）提示、「讀取離線 CODES」只向 `/codes?broker=` 讀該家那一檔、「更新離線 CODES」只向 `/codes/refresh?broker=` 送出且不带市場參數並重讀該行、換券商即改讀該家那一檔、切換語言時該行一併重貼、兩頁的自動更新以秒為單位且預設 0 時完全不打請求、標的頁定時更新預設只重讀離線快照（勾上「自動向券商重拉」才向券商取清單）、閘道不可達與金鑰不符均明確報錯、六個分頁齊全且標題由字庫按鍵取（轉語言後六個標題全部重貼、不重建窗口）、兩個 K 線頁預設 `HK.HSImain`／`1m`／1000（上限 1000）、K 頁券商下拉框只列生效者（不像標的頁按品種過濾）、週期選項只由 `/capabilities` 的 `ktypes` 填充且順序原樣、表格欄位即 `K_COLUMNS` 且按時間反序（存放仍為升序，反序只屬顯示層）、訂閱與停止的按鈕狀態、`update` 經序列合併（同 ts 覆蓋、已取的歷史不縮返最近幾根）、K 線串流頁惰性建立 DF 上方的 `ChartView`（無顯示環境起不來即說明原因而非留空白，DF 照常填充並反序）、只交一份 DataFrame 給那份共用的 `chart.js`，並核對渲染的根數與 DF 一致（圖與 DF 同一份序列，並照控制列的週期顯示時間軸）、BROKER 管理頁列出全部券商且開關一改即重讀能力聲明、背景取數的回應經一個屬主執行緒的轉接交回 GUI 執行緒（PySide6 中連到普通可呼叫物件的信號在發射執行緒執行，直接碰 `runJavaScript` 即崩潰）、按「訂閱」先向 `/kline` 取歷史、歷史已在圖上才建立連接且只開**一條** `/stream`（取不到歷史即不訂閱並解鎖按鈕）、收到的 `update` 原樣合併並保持反序、取歷史在途時撳「停止」即取消意圖、停止後重按「訂閱」會重新先取歷史（不被已收尾的連接擋住）、接手唔使等（「停止」後不預先記低 `closed` 帧給的收尾秒數 → 同一份請求再按「訂閱」即刻送訂閱幀、即刻串流）、K 圖佔頁面高度的一半以上（圖表區與 DF 按 .ui 的 3:2 分配）、多週期分頁：格子數與順序即該券商聲明的 `stream_ktypes`（存根刻意把 ib 排成未排序，界面照原樣）、每格一排水平週期按鈕且只有該格高亮、無表格無 DF、根數為一個共用輸入、九格逐格先取歷史先開**一條** `QWebSocket` 送九個訂閱、`update` 按 `ktype` 只餵對應格、換一格只重取嗰格並只送帶該 ktype 的退訂、該舊週期仍有別格顯示即同簽名，唔退它、**同一券商同一週期可並行多條**（多週期頁已佔住 `futu/1m` 時另一頁照樣訂閱：另開一條連接、唔被拒、唔使等；兩條各自收到推送各 +2 根；停一條唔影響另一條；已收返嘅連接唔再被填）、協定錯誤原樣呈現且唔被自動重送、一個「停止」收齊全部格子並就地提示已停止、`GridView` 惰性建立且起不來即說明原因而非留空白（按鈕只帶 ktype token，換語言唔使重建格子）、直接啟動 `brokery_gui/run.py` 核對窗口會存活（不需券商連線，亦不需顯示器）
 python brokery/acceptance/run_launch.py        # 啟動器 run_all.py：以存根命令核對兩個同時啟動、先結束者停止另一個並返回其退出碼、正常結束返回 0、Ctrl+C 一併停止、預設命令即兩個既有入口、啟動器不引入券商 SDK（不需券商連線，亦不真的啟動服務）
 ```
 測試以腳本方式直接執行（不使用 pytest）：執行後即輸出 `status`、`message` 與完整代碼表，

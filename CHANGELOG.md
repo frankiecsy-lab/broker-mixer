@@ -586,3 +586,278 @@
   `run_api.py` 62 → 80、`run_ui.py` 42 → 47、`run_gui.py` 52 → 84、`run_codes_refresh.py` 30 → 31（被停用者不做背景
   自動更新）；`run_webui.py` 51 → 79（重寫時一度丟失戶口／標的／離線 CODES／自動更新嘅覆蓋，已照今日嘅契約補回）。
 - 語言檔三份鍵集合仍一致（44 → 73 個）；七個 `.ui` 檔仍不含任何文字。
+
+### 新增（K 線圖（多週期 3×3）、圖表模組化與多週期串流）
+- 週期順序得返一份定義：`brokers/base.KTYPE_ORDER = tuple(BAR_MINUTES)`（`1m/3m/5m/15m/30m/60m/day/week/month`
+  九個），`/capabilities` 照呢份返回，界面唔准自排、唔准憑空補。
+- 可並行的週期由適配器聲明：`SymbolBroker.stream_ktypes`（futu 為全部九個、IB 為其 `IB_BAR_SIZE` 表、
+  tiger/webull 只聲明 `1m`）。驗收與界面一律照呢份取名單，唔自己寫死。
+- **futu 同一條連線容許多個 ktype 並行**：`_KlinePushRouter`（`CurKlineHandlerBase`）按推送行上的 `k_type`
+  分派俾各 `_KlineSink`（推送幀本身包含全部已訂閱的週期），`_streams` 引用計數決定 start/stop，同週期的第二份
+  明確返回 `stream_busy`。順手修 `connect()` 嘅 race：三條執行緒同時首次取數會建出三個 `OpenQuoteContext`，
+  現以 `_conn_lock` 使 `connect()` 冪等，只建一條。
+- 閘道 `/stream` 名額由「每券商一名額」改為按**（券商, 週期）** 計（九個週期今日先至訂閱到，舊名額第 2 個即
+  `stream_busy`）；一條 WS 容許多個訂閱與多個 `stop`，`stop` 的 `broker`/`ktype` 皆可省略且只收該部分，
+  `subscribed`/`update`/`closed`/`error` 一律帶 `broker`/`ktype`。
+  **修復**：`stop` 冇由本連接嘅 `workers` 表除名 → 已指示停止但執行緒未收尾嘅訂閱會被第二次 `stop` 重複發
+  `closed`（實測 5m 出現兩次）；現先除名，名額仍由執行緒收尾時歸還。
+- **圖表模組化**：`BrokeryChart.create(el, opts)` 一格一實例（`update`/`overlays`/`reset`/`destroy`，
+  `opts.compact` 供小格），各自記自己嘅縮放範圍，故串流 `update` 唔會跳返原位；`render()`／`resizeAll()`
+  變為舊簽名嘅外殼，三張既有頁面唔改調用口徑。縮放、平移、雙擊復原與現價水平線一律由呢份規格提供，界面唔寫一行。
+  - **實測限制**：ECharts 嘅 `zoomOnMouseWheel: true` 唔理修飾鍵（Shift+滾輪會連 X 軸一齊縮，單軸縮小失效），
+    且 zrender 先喺容器註冊 wheel 並切斷後續 listener。故 `dataZoom` 一律關滾輪，由實例喺 **capture** 階段按
+    修飾鍵 `dispatchAction`（滾輪只縮 X 軸、Shift+滾輪只縮 Y 軸）。現價線一律取序列最後一根嘅收市價，故跟住
+    串流走，界面唔使另外傳值（無資料時唔畫）。
+- 多週期載體頁 `brokery/static/chart_grid.html`（`BrokeryGrid.build/pick/takePicks/set/note`，3×3、每格以水平
+  按鈕自選週期、頁內冇任何 `select`）；Python 側為 `chart.grid_page()`／`grid_js(index, frame, ktype, overlays)`／
+  `grid_note_js(index, text)`，overlays 與單張圖同一格式，故自訂指標九格一致。載體頁本身唔含文字，提示文案一律
+  由界面嘅語言鍵提供。
+- 桌面 GUI：`brokery_gui/grid_view.py`（`QWebEngineView` 載入載體頁，`GridView.build/set_cell/note` + `picked`
+  信號）與 `ui/kline_grid_page.ui`（刻意冇 `ktypeCombo`，週期喺格內選）。
+  **唔用 QWebChannel**：offscreen 環境下載入 `qrc:///qtwebchannel/qwebchannel.js` 即令 WebEngine segfault
+  （`setWebChannel` 本身冇事），故格內點選由 `BrokeryGrid.takePicks()` 以短周期輪詢交回 Qt。
+- `brokery_gui/stream.py` 由「一條連接一個訂閱」改為一條連接多個訂閱：`subscribe()` 未連接時排隊、連接後補發，
+  `unsubscribe(broker, ktype)`，`_open` 為剩餘嘅 (broker, ktype) 且只喺空時先 `_finish()`，`stop()` 發裸
+  `{"action":"stop"}`。順手修真 bug：`active` 用咗 `QAbstractSocket.Unconnected`（呢個 PySide6 冇呢名，要
+  `UnconnectedState`），未連接時給 `isValid()` 短路所以一直冇爆。
+- **連線數嘅實測結論**：券商端嘅訂閱數唔可以少過週期數（每個週期係上游一份訂閱），但可共用同一條券商連線；
+  真正會排塞嘅係界面→閘道嗰一层——瀏覽器對同一來源只得約 6 條 HTTP/1.1 併發連線，九條 WS 會排到塞住，
+  故九個週期只開**一條** `/stream`（多訂閱、`update` 帶 `ktype`）。改一格週期即只重取那一格、並只退該週期嘅名額。
+- `/static/{name}` 由「白名單兩檔」改為只准取 `brokery/static/` 內嘅檔案（解析後嘅路徑不可走出該目錄，否則
+  明確 404 `static_missing`）——載體頁需要第三個檔案，逐個加白名單一定會有漏。
+- 驗收：`run_chart_spec.py` 17 → 31（`create()` 一格一實例、真滾輪／真拖曳／真雙擊、現價線、`chart_grid` 嘅
+  build/set/note/takePicks，並真執行 Python 生成嘅 `grid_js`/`grid_note_js`）、`run_api.py` 80 → 85、
+  `run_gui.py` 84 → 98、`run_webui.py` 79 → 93；`run_stream_kline.py` 加多週期並行（各週期 `ts` 間距為該週期嘅
+  整數倍、同週期第二份 `stream_busy`、多個週期共用同一個 `OpenQuoteContext`）→ 35 PASS / 5 FAIL，5 個 FAIL
+  全部係 IB 連唔到 TWS（`WinError 1225`，屬環境而非代碼）。
+- 語言檔三份鍵集合仍一致（73 → 85 個）；八個 `.ui` 檔仍不含任何文字。
+
+### 變更（訂閱實時一律先取歷史，再喺同一張圖合併串流）
+- 三個界面（閘道面板 `ui.html`、Web UI `home.html`、桌面 GUI `app.py`）同一規則：撳「訂閱實時」即先為該（代碼,
+  週期）向 `/kline` 取歷史，歷史回到序列先至建立 WS 訂閱；**歷史都無 bar 即唔訂閱**——只靠串流撐出來嘅圖得返最近
+  幾十根實時 bar，卻會被誤認為完整歷史。合併規則不變（key =（代碼, ts），同 ts 以新到者為準，保留最新 N 根），
+  故畫面永遠係一條連續序列，唔會變成第二張圖。
+- 多週期：先為九格各取自己週期的歷史，九格齊了先至喺同一條連接訂閱（只訂閱有 bar 嘅格）。串流中改一格：先退舊
+  週期嘅名額，該格的新週期歷史回到圖上才喺同一條連接 `subscribe`（先訂閱即該格得返最近幾十根；不重連、不影響
+  其餘各格）。
+- 桌面端取歷史在途時撳「停止」：`wants_stream`／`_grid_wanted` 記低意圖，歷史返到時不再建立連接。
+- **修復**：`end_stream`／`end_grid_stream` 冇丟掉已收尾嘅 `StreamClient`，「停止」後重按「訂閱」被防重入擋住而
+  靜靜冇反應。同步放手又會喺該連接自己嘅 `finished` 信號鏈中途析構 QObject（access violation，offscreen 跑驗收
+  即崩）→ 建立時 `parent=self.window`（`DesktopGui` 唔係 QObject，`parent=self` 即 constructor 錯），收尾改用
+  `deleteLater()`。
+- 驗收：`run_gui.py` 98 → 103、`run_webui.py` 93 → 97。順序斷言嘅手法：HTTP 存根只識 `/kline`、WS 存根只識
+  `/stream`，故以 wrapper 喺「歷史已返、未建連接」嗰一瞬間先換 `base_url` 指向（真實閘道兩者同一地址）；「先退
+  名額、歷史回到圖上才訂閱」以每幀到達那一刻嘅根數快照核對（事後再查 frames 證明唔到訂閱嗰一刻嘅狀態）。順手修
+  兩處會攰斗嘅斷言：「停止」後等一句可能已經喺度嘅說話（改一格週期退名額都會寫「已停止 futu 串流」）→ 改等
+  `pane.stream`／`_grid_stream` 真正為 `None`。
+
+### 修復（拖曳之後雙擊復原靜靜冇效）
+- `dataZoom.throttle` 預設 100ms：拖曳最後幾個平移動作會喺雙擊復原**之後**先送達，`chart.on('dataZoom')` 再把它
+  們寫返入 `view`，復原即被蓋走（實測復原後範圍變返拖曳前嗰段）。roam 驅動嘅事件唔帶 `start`/`end`，無法靠 payload
+  區分，故喺 x 軸嗰份 dataZoom 設 `throttle: 0`（即時生效），復原守得住，拖曳手感亦更直接。
+- 由 `run_chart_spec.py` 嘅真拖曳＋真雙擊斷言捉到（30 PASS / 1 FAIL，重跑兩次同樣，非偶發）。
+
+### 變更（K 線界面收返兩頁：刪除「K 線圖」與「K 線圖（多週期）」，圖移入「K 線串流」的 DF 上方）
+- 只刪頁面，唔刪能力：`home.html` 的 `kq-*` 與 `.grid` CSS、GUI 的 `KlineChartPage`／`KlineGridPage`、
+  `ui/kline_chart_page.ui`／`ui/kline_grid_page.ui`、`brokery_gui/grid_view.py`、`static/chart_grid.html`、
+  `chart.py` 的 `grid_page()`／`grid_js()`／`grid_note_js()` 一併移除，冇留任何相容性外殼。
+- `static/chart.js` 與 `brokery_gui/chart_view.py` 保留：圖表改由「K 線串流」頁在表格上方畫出（Web UI
+  `#ks-chart`、GUI `chartBox`），沿用同一個 `KlinePane`／`BarStore` 與同一條「先取歷史、歷史回到圖上才訂閱」的
+  規則，故 `paint_kline`／`renderTable` 永遠同一份序列（表格行數即合併後的根數）。
+- `BrokeryChart.create(el, opts)` 的 `opts` 只剩初始縮放範圍與圖形規格（`ktype`，換週期由 `update` 帶新值）；
+  `opts.compact` 隨 3×3 載體頁一併去掉（再無其他呼叫者）。
+- 多週期仍是 **API 層**能力：`stream_ktypes`、`/stream` 名額按（券商, 週期）、一條 WS 多個訂閱照樣保留，
+  只係冇咗 3×3 嗰個界面。
+- **Web UI 的 DF 表格去掉 30 行截斷**（`K_TABLE_ROWS`）：接口返回幾多根就列幾多行。查證過資料層冇手腳——
+  `raw=True` 與統一行的 `volume`/`turnover` 逐行相同（富途原生 dtype 本身即 float64），transport、core、適配器與
+  推送 sink 一律原樣傳遞；真正的「簡化」只發生喺顯示層。桌面 GUI 本來就無此上限。
+- 語言檔 85 → 69 鍵（三份鍵集合仍一致）；`.ui` 由八個減至六個（`kline_stream_page.ui` 加
+  `chartBox`／`chartLayout`／`chartNoteLabel`，圖表區由程式延後放入，.ui 仍不引用任何 QtWebEngine 型別）。
+- 驗收計數：`run_chart_spec.py` 31 → 26、`run_gui.py` 103 → 86、`run_webui.py` 97 → 82。新增斷言：選單為五項、
+  DF 列出接口返回的全部行（120 行的存根返回 120 行）、串流頁 canvas 在表格之前且與表格同一份序列、訂閱只開
+  **一條**上游 WebSocket。全閘口 20 檔：14 檔 exit=0，6 檔的 FAIL 全部為 IB 連唔到 TWS
+  （`ConnectionRefusedError: WinError 1225`，屬環境而非代碼）。
+
+### 變更（閘道接手仍在推送的串流；桌面 GUI 的載入提示、圖表高度與現價大字）
+- **「訂閱咗就唔好再訂閱，直接串流」**：名額按（券商, 週期），而 `Brokery.stream_kline` 沒有 stop 鉤子——`StreamWorker.stop()`
+  只標記，執行緒要到該次時窗（`API_STREAM_SECONDS`）走完才返回並經 `on_done` 釋放。故「停止」之後名額本來就未釋放，再訂閱
+  同一份請求只會在閘道換來一次 `stream_busy` 同一段睇唔到最新價嘅空窗。改法在閘道：`StreamWorker` 加
+  `attach`/`detach`/`resume`/`same_request`，`attached` 建立時即為 True（綁住創建它嘅連接），客戶端停止或斷線即 `detach()`；
+  同一（券商, 週期）再訂閱，若代碼、根數、複權、`raw` 完全一致且暫無連接在收，即**接手**呢條仍在跑的串流（換的只是收事件
+  的佇列，不重新向券商訂閱），回 `subscribed` 帶 `resumed` 與剩餘秒數；換了參數或該週期已被別條連接收住才照舊明確返回
+  `stream_busy`，其 error 帧附 `release_in`（自然結束的 `end` 帧不帶該欄位，名額已歸還）。不改 core 與適配器：接手屬閘道
+  的連接管理。GUI 因此不再預先記低 `closed` 帧的 `release_in`（只會白等一段根本唔使等嘅時間），只喺真被拒時把
+  `release_in` 記在 `KlinePane.quota` 並以 `wait_quota` 的 1 秒 `QTimer` 倒數（`kline.quota_wait`、`COLOR_WARN`）、到點
+  `retry_stream` 自動重送訂閱，期間按「停止」即取消（用可 `stop()` 的計時器而非 `singleShot`）。
+- **載入提示由狀態驅動**：`ChartView` 以 `ready`/`error` 與 `on_state` 回報載入狀態，`note_chart()` 據此顯示「正在載入
+  圖表…」、就緒即清走、失敗才顯示原因。之前是畫圖時順手寫上、成功時不清走，故圖已出現仍掛住提示。
+- **圖要佔盡圖表區，並佔頁面高度一半以上**：`ChartView` 的 view 以 `QSizePolicy.Expanding` 並帶 stretch 加入佈局（之前與
+  提示列平分該區高度）。`kline_stream_page.ui` 的圖表區／DF `verstretch` 由 2:3 改為 **3:2**（實測 1280×800 下圖佔頁 54%）。
+- **現價大字與右側留位（`static/chart.js`，三處界面同畫）**：`graphic` 於右上角以 22px 粗體顯示序列最後一根的收市價
+  （升紅跌綠），`room.right` 16 → 64 讓最新一根 K 線不緊貼右邊界（現價數字即疊於該留白之上）；兩個 `yAxis` 一律
+  `splitLine: {show: false}`。本圖 `animation: false`，故閃爍由實例自己做：`paint()` 比較新舊現價，只在價格真的改變時
+  以反色底蓋一次（`FLASH_MS = 700`，`destroy()` 一併清計時器）；首次載入與重畫同一價格不閃。
+- **測試側的兩處修正**（非 core 改動）：① 串流存根的 `closed` 帧要照真實閘道逐個訂閱帶 `broker`＋`ktype`（stop 幀本身
+  唔帶呢兩個欄位），否則名額記成空週期，`quota_left` 永遠配唔上；② 按「停止」之前要先等到 `subscribe` 幀真的送達存根
+  ——`StreamClient.stop()` 只在 `ConnectedState` 才發帧，連接未建立時 stop 會被丟掉，`closed` 亦唔會返。
+- **取消等名額的收尾分兩條路徑**：解鎖按鈕原本只由 `end_stream()` 做，而佢由該連接自己的 `finished` 觸發。被
+  `stream_busy` 拒咗之後連接仍然在（閘道只回一帧 error），故呢種取消照舊由 `closed`/`finished` 收尾，提示以「已停止 …
+  串流」為準，唔應該再寫「已取消等待訂閱」；只有根本未開連接嘅等待（舊名額未過又重按「訂閱」）先要 `stop_stream()` 自己
+  解鎖並改以 `kline.wait_cancelled` 說明，否則撳「停止」之後「訂閱」一直灰住，用戶連改參數重來嘅門都冇（取歷史在途嗰種
+  取消仍由 `open_stream` 的 `wants_stream` 防護收尾）。
+- 語言檔 69 → 71 鍵（新增 `kline.quota_wait`、`kline.wait_cancelled`，三份鍵集合仍一致）。驗收計數：`run_chart_spec.py`
+  26 → 30（新增現價大字的取值/配色/只在新價改變時閃、取消 y 軸格線、最新一根右側留位）、`run_api.py` 85 → 90（新增
+  「同一份請求在新連接上被接手：不另起名額、不返回 `stream_busy`」與接手後即刻收到仍在推送的 bar）、`run_gui.py` 86 → 93
+  （新增名額四步：停止後即刻重訂閱即刻串流、真被拒先倒數、到點自動重送、等名額期間停止即取消；另加載入提示清走、圖佔盡
+  圖表區高度、K 圖佔頁面高度一半以上）。
+- **測試側第三處修正**：名額到點嗰次訂閱係由 `QTimer` 直接呼叫 `retry_stream`（連接還在即照同一條再送訂閱幀，已收尾才經
+  `open_stream` 重建），唔再經過 `stream_after_history` 嗰次性嘅地址換指向，故該節要把 `app.StreamClient` 固定指向 WS 存根
+  （取歷史照樣打 HTTP 存根）。真實閘道 `/kline` 與 `/stream` 同一地址，無此問題——呢係存根分成兩條造成，唔係界面嘅缺陷。
+- **測試側第四處分工**：`stream_busy` 嘅反例由 WS 存根一次性注入（`StreamStub.reject_in`），存根**唔重寫**閘道的名額規則
+  （接手與否由 `run_api.py` 對住真閘道驗）；`run_gui.py` 只驗界面收到協定帧之後嘅反應，兩檔唔重疊。
+
+### 變更（`count` 在任何週期足數、根數可任選、K 圖為可重用元件）
+- **根因喺取數路徑，唔係界面**：實測 `HK.HSImain` 傳 `count=1000` 時，`1m`/`15m` 得 1000 根，`5m`/`30m`/`60m`/`day`/
+  `week`/`month` 一律只得 60 根——因為 `FutuBroker.get_kline` 以 `count ≤ FUTU_PAGE_MAX` 分路徑，而 `get_cur_kline` 喺呢啲
+  週期根本唔給足。「1000 條只顯幾十條」同樣係數據層只得 60 根，唔係 `chart.js` 的視窗問題。
+- **改法**：`get_cur_kline` 降為**快路徑**，不足即以 `request_history_kline` 分頁（`max_count = FUTU_PAGE_MAX`）多取，兩段按
+  `ts`（`raw=True` 則 `time_key`）去重合併——同一根以快路徑者為準——再取尾 `count` 根。起日由 `span_days` 推算，過早會被
+  上游拒（`F3CNN返回錯誤，可能是參數錯誤或者斷線`），故以 `HISTORY_MIN_SPAN_DAYS = 365` 為下限折半重試，到下限仍失敗即
+  明確抛出而唔靜靜少返。`span_days` 本身冇改（IB 同用）；無任何 hardcode 最大回溯。實測 `count=3000`：`1m`–`day` 足數，
+  `week` 1114 根、`month` 257 根（該標的的真實深度），每條 ≤1.3 秒。
+- **深度不足會點名**（core）：實際根數少於請求時 `status` 仍為 `True`，但 `message` 加「`{broker} 的 {ktype} 深度只有 M 根
+  （請求 N 根）`」，閘道原樣透傳，界面即刻見到邊家邊個週期只得幾多根。
+- **根數可任選**：`kline_pull_page.ui`／`kline_stream_page.ui` 的 `countSpin` `maximum` 1000 → **100000**（core 本來就無上限，
+  只有 `count < 1` 報 `bad_count:`）。
+- **合併器上限跟請求根數**：`chart.BarStore` 新增 `set_limit()`（改上限即刻按新值裁剪），`KlinePane.select()` 按控制列的
+  `count` 縮放；之前寫死 `BarStore(DEFAULT_COUNT)`，取 3000 根會被裁返 1000 根。
+- **顯示所請求**：`chart.render_js` 新增 `start`/`end` 透傳（`chart.js` 的 `option()` 本來就收 `opts.start`，`DEFAULT_START = 60`
+  只是省略時的預設），桌面 GUI 渲染時傳 `start: 0`，即本次所請求的根數全部喺圖上（`dataZoom` 照可再收窄）。呢一步只改
+  GUI，`chart.js` 的預設行為不變（Web UI 其後跟上一輪，見下一節）。
+- **K 圖模組化重用**：`brokery_gui/chart_view.py` 新增 `KlineChart`（圖表容器 + 提示列 + 惰性 `ChartView` + 狀態提示，換語言
+  自行重貼），每個有 `chartBox` 的分頁各持一個（`pane.chart`，無該容器嘅頁為 `None`）；移除 `app.py` 的 `self._chart`／
+  `ensure_chart`／`note_chart`／`paint_chart` 與 `page is self.kline_stream` 特例，日後任何頁要加圖只傳容器與提示列即可。
+- 驗收計數：新增 `run_futu_kline.py` **13 項**（離線存根 `_ctx`，唔使 OpenD：六個週期各取足 1000 根、兩段重疊去重且以快
+  路徑者為準、`count=3000` 唔行快路徑、起日折半序列、到下限明確报错、month 只得 257 根、core 的 shortfall message 原樣送到
+  信封、`raw=True` 按原生 `time_key` 排序截尾）；`run_chart_spec.py` 30 → **32**（`render_js` 帶 `start`/`end`、省略時不帶；
+  `BrokeryChart.create(el, {start: 0})` 即 1000 根全部喺圖上）、`run_api.py` 90 → **91**（閘道原樣透傳 shortfall message）、
+  `run_gui.py` 93 → **94**（`countSpin` 上限、`count=3000` 原樣轉發且 `store.limit == 3000`、每頁各一張圖且 `gui._chart` 已無、
+  渲染帶 `start: 0` 且圖與表格同一份根數）。
+
+### 變更（Web UI 與桌面 GUI 功能同步；順帶修走 `chart.js` 兩處潛藏缺陷）
+- **同步清單**：桌面 GUI 上一輪的五項一律補到 Web UI（`brokery_webui/home.html` 的 `klinePane`，即 GUI `KlinePane`／
+  `KlineChart` 喺頁面的對應物，兩頁各持一份控件、序列與連接）：根數可任填（`min=1 max=100000`）、合併器上限跟本次請求的
+  根數、開圖傳 `start: 0`、換週期即換該次輸入的規格、`stream_busy` 照 `release_in` 倒數後自動重送訂閱。
+- **`store()` 上限寫死**（共用層）：`BrokeryChart.store(1000)` 之後無法調整，取 3000 根會被 `trim()` 裁返 1000 根——即
+  「1000 條只顯幾十條」在 JS 側的另一半成因。新增 `setLimit(next)`（即刻按新值裁剪，並回報新值），與 Python 側
+  `BarStore.set_limit()` 同一口徑。
+- **`render()` 重入唔帶規格**（共用層）：外殼只喺首次 `create(el, opts)` 時交 `opts`，其後 `update()` 收到 `undefined`，
+  故界面換咗週期後 x 軸 formatter 永遠照開圖時嘅週期（日線仍顯示 `MM-DD HH:MM`）。圖形規格屬該次輸入的一部分，改為每次
+  都交落該實例的 `update`；同一元素重入仍取返同一個實例（換標的不會疊加舊圖）。兩處都係三個界面共用，閘道面板同桌面
+  GUI 一併受益。
+- **名額被拒嘅正確客戶端行為**：真實閘道對 `stream_busy` 只發一幀帶 `release_in` 的 `error` 而**唔收線**（`app.py` 該分支
+  其後 `continue`），所以喺同一條連接上重送訂閱先係對路；Web UI 之前只把訊息顯示出嚟就解鎖按鈕，用戶要自己再撳一次。
+  現照 GUI 口徑：倒數只認而家的控件（換券商或週期即唔再等舊名額），撳「停止」即取消倒數。
+- **有意保留的差異**（唔係缺口）：Web UI 的圖高為 CSS 固定的 420px，唔隨視窗拉伸——「K 圖佔頁面高度一半以上」屬桌面
+  窗口嘅版面要求；閘道面板 `brokery_api/ui.html` 的根數輸入仍為 `max=1000`（該頁為除錯面板，且 1000 以內唔會觸及上述
+  上限缺陷）。
+- 驗收計數：`run_webui.py` 82 → **86**（根數可任填且 3000 原樣送達、`store.limit == 3000`、開圖 `start: 0` 且圖上的 bar 數
+  即合併後的根數、換週期後 x 軸格式跟住改、`stream_busy` 由 WS 存根只拒一次並帶 `release_in`，核對 2 次訂閱／1 條連接）、
+  `run_chart_spec.py` 32 → **34**（`store().setLimit()` 調高即取足 3000 根、調低即裁走最舊；`render()` 每次帶規格）。
+
+### 變更（一條串流同時送俾多個界面：`StreamWorker` 由單佇列改為多訂閱者）
+- **成因**：用戶實測「GUI 可以串流／WEBUI 1m 串流名額尚未釋放，約 166 秒後自動訂閱」。名額按（券商, 週期）全閘道計，
+  而 `StreamWorker` 只綁**一條**連接的佇列（`_loop`/`_queue`/`attached`），故第二個界面一定被拒——不同週期或不同券商本來
+  就唔使等，同一份請求先會。
+- **改法**：`_loop`/`_queue`/`attached` → `_subs: dict[asyncio.Queue, asyncio.AbstractEventLoop]`（佇列 → 該佇列所屬的
+  事件循環；跨事件循環仍须经 `call_soon_threadsafe`）。`push()` 逐個送，並先取 `list(...)` 快照：券商執行緒推送期間，
+  事件循環可能同時 `join`/`leave`。
+- `attach`/`detach`/`resume` → `join(loop, queue)`（回傳是否由「無人收」回到有，即接手，並撤銷 `_stopping`）、
+  `leave(queue)`（回傳是否已無人收，只有最後一個退出先 `stop()`）、`watchers`（而家幾條連接在收）。`stop` 動作與連接
+  收尾的 `finally` 一律改調 `leave`：先退出者不該把別家仍在收的串流一併停掉。
+- `subscribed` 幀新增 `resumed`（接手一條暫無人收的串流）與 `shared`（超過一條連接在收）。同一條連接重送同一份請求為
+  冪等——`_subs` 以佇列為 key，watchers 仍為 1，故 `shared` 為 False。
+- `stream_busy:` 只剩**參數不同**先出現（一份請求 = 同代碼、同根數、同復權口徑、同 `raw`）；前綴不變，客戶端靠佢倒數，
+  故 Web UI 與桌面 GUI 一律唔使改。要共用即兩邊根數要填一樣（兩邊預設都是 1000，开箱即用）。
+- 唔改 core 與適配器：富途的推送回調按連線設置，同一（代碼, 週期）一條連線只容一份，而閘道本來就只向券商訂閱一次，
+  fan-out 屬閘道的分派。
+- 驗收：`run_api.py` 91 → **96**（`HoldPushQuote` 加「向券商訂閱了幾次」計數；兩條連接同一份請求 → 只訂閱一次、兩邊各收
+  同一份 `update`、`shared`；一方 `stop` 只退出自己、另一條照收且不會另起一次訂閱；同一連接重送同一份請求為冪等；換
+  `count` 仍 `stream_busy`）。改走舊斷言「同一（券商, 週期）同時只容許一份串流」（語義已變），拒絕一例改錨在參數不同。
+  Starlette `TestClient` 可同時持有兩條 `websocket_connect`（已探測），故呢項可在進程內驗收，不需要真閘道。
+
+### 新增（「K 線串流（多週期）」3×3：一格一週期、九格同一條連接）
+- **格子與按鈕的來源只有一處**：所選券商聲明的 `stream_ktypes`（`/capabilities` 的 `adapters[name].stream_ktypes`，
+  照 `KTYPE_ORDER` 排列）。futu 聲明九個 → 正好 3×3；IB 得部分；tiger／webull 只有 `1m` → 得返一格。界面唔排序、
+  唔憑空補週期，所以唔會見到八格同時報 `ktype_unsupported`（與「能力不支持由適配器聲明、core 統一拒绝」同一口徑）。
+- **圖表層加緊湊形態**（`brokery/static/chart.js` 的 `opts.compact`）：`option()` 只生成一個 grid 與一條 candlestick
+  series（唔畫成交量格與 `xAxis[1]`/`yAxis[1]`、唔畫右上角現價大字，現價虛線保留但 label 縮細、`room` 收細）。
+  非 `compact` 逐項完全唔變，故兩個單格 K 線頁與既有斷言照過。
+- **一份共用嘅多格 JS**（`brokery/static/chart_grid.js`，`window.BrokeryGrid.build(el, {ktypes, onPick})`）：為每個
+  ktype 建一格（上方一排水平週期按鈕 + 一個圖表 div），每格一個獨立實例；`set(i, payload, ktype)` 只重畫一格，
+  `note(i, text)` 逐格提示，`takePicks()` 取走並清空點擊佇列。**頁內零文字**：按鈕只帶 `1m`／`day` 呢類 ktype token，
+  語言中性，故換語言唔使重建格子（三份字庫因此完全唔需要為按鈕加鍵）。載體頁 `brokery/static/chart_grid.html`
+  （唯一容器 `#grid`，探針 `brokeryGridReady`/`brokeryGridMissing`）。
+- **Python 側只多幾個入口**（`brokery/chart.py`）：`grid_page()`（經既有 `static_file`）、`grid_js(ktypes)`、
+  `grid_set_js(index, frame, ktype)`、`grid_note_js(index, text)`、`grid_picks_js()`。`render_js`/`host_page` 冇郁。
+- **桌面 GUI**：新 `brokery_gui/ui/kline_grid_page.ui`（檔內零 `<string>`，冇 `ktypeCombo`、冇 `klineTable`）+ 新
+  `brokery_gui/grid_view.py`（`GridView` 照 `chart_view.KlineChart` 同一口徑：惰性 `ensure()`、載入提示由視圖狀態驅動、
+  起不來顯示原因而唔係空白）。按鈕點擊靠 `QTimer` 輪詢 `takePicks()` 交回 Python，並只在該分頁可見且載體頁已就緒時
+  輪詢——`QWebChannel` 喺 offscreen 載 `qrc:///qtwebchannel/qwebchannel.js` 即 segfault（已實測）。
+- **逐格狀態，唔係逐頁**：`brokery_gui/app.py` 的 `GridPane` 同一頁持有 `stores: list[BarStore]`（一格一份）、
+  `current: list[ktype]`、`keys`、**一條** `StreamClient`、`quotas: dict[(broker,ktype), 可再訂閱時刻]`。現有 `KlinePane`
+  假設一頁一序列一 `ktypeCombo`，九格塞唔入去，故另寫一份而唔硬改。Web UI 側對應為 `home.html` 的 `gridPane(prefix)`。
+- **流程照單格串流頁**：先逐格 `/kline` 取歷史（根數為控制列一個共用輸入，預設 300），全部返回先至喺**一條**連接上
+  送九個 `subscribe`；`update` 按 `ktype` 只重畫對應格；一個「開始／停止」管全部格子（逐格只有週期按鈕）。換某一格
+  嘅週期即只重取嗰格、只退該 (券商, 週期) 名額；若該舊週期仍有別格顯示則唔退（退咗會斷咗嗰格嘅推送）。
+- **閘道與 core 冇改**：名額按（券商, 週期）、`update` 一律帶 `ktype`、`stop` 可帶 `broker`/`ktype` 只收一部分，全部
+  係上一輪已落地嘅協定（`brokery_api/app.py` 的註解本來就寫明「多週期界面（例如 3×3）只用一條 WS」）。呢次只係界面
+  第一次真係咁用。九個訂閱共用一條連接唔係偏好而係必須：瀏覽器對同一來源只得約 6 條 HTTP/1.1 併發連線。
+- **順帶修走兩個真缺陷**（`brokery_webui/home.html`）：① `pick()` 嘅守門用咗 `current`（而家邊格顯示緊咩）而唔係
+  `layout`（聲明嘅清單）→ 某週期被別格換走之後就永遠換唔返，而按鈕已經高亮咗，界面即刻矛盾（桌面 GUI 嘅守門本來就
+  係 `ktype not in pane.layout`，兩邊自此一致）；② 「停止」嘅收尾提示靠 `closed` 帧，但瀏覽器一 `close()`，Web UI 嘅
+  `/ws/stream` 代理即拆上游，閘道逐個回嘅 `closed` 未必返到嚟，訊息會留低「已更新 X」→ 收尾改由 `stop()` 自己寫，
+  並喺 `readyState === OPEN` 先送（與桌面 GUI `stop_stream` 同一口徑；`end`/`closed` 分支只留註解，全頁只有一處報停止）。
+  同一類問題喺 GUI 側為「等名額期間按『停止』」：該連接喺閘道無 worker，換唔到 `closed`，故 `stop_stream` 就地改寫
+  （有連接即「已停止 X 串流」，無連接即「已取消等待訂閱」）。
+- 驗收：`run_chart_spec.py` 34 → **47**（`compact` 的 `option()` 只一條 series 一個 grid 無現價大字、非 `compact` 逐項
+  照舊；`BrokeryGrid` 九格九實例互不影響、撳按鈕只重畫一格並只上報 `[格, 週期]`、`takePicks()` 取走即清空、
+  `resizeAll()` 涵蓋全部格子；`chart.py` 五個 `grid_*` 入口產生可在載體頁直接執行的呼叫）。
+  `run_gui.py` 94 → **115**（六個分頁、七個 `.ui` 檔齊全且無文字、格子數與順序即聲明的 `stream_ktypes`（存根刻意把
+  ib 排成未排序）、九格逐格取歷史先開一條 `QWebSocket` 九個訂閱、`update` 按 ktype 只餵對應格、換一格只重取嗰格並只送
+  帶該 ktype 的退訂、別格同週期唔退名額、一格等名額唔阻其余、`GridView` 惰性與起不來明確提示）。
+  `run_webui.py` 86 → **106**（選單六項、`/static/chart_grid.js` 與 GUI 讀到嘅逐 byte 相同、九格九實例、每格九個水平
+  按鈕只有該格高亮、無 DF、九次逐格取數先開一條連接九個訂閱、`update` 按 ktype 只畫對應格、帶 ktype 的 `stop` 且唔開
+  第二條連接、換返已無格子顯示的週期即補訂閱、一個「停止」只送一次裸 `stop` 並就地提示已停止、換券商即按 IB 未排序嘅
+  聲明原樣重建）。`run_api.py` 96 → **108**（一條連接一次過訂閱九個週期、九份 `update` 各自帶自己嘅 `ktype`、`stop`
+  只帶一格嘅 ktype 時該格 `closed` 而其餘八格照收、再送一次唔帶 ktype 的 `stop` 即逐個 `closed` 收齊剩低八格）。
+  三份字庫 71 → **76 鍵**（鍵集合必須一致）。
+
+### 變更（一份串流由請求簽名界定：同一券商同一週期可並行多條，名額倒數全線刪除）
+- **動機**：用戶要「同一 BROKER、同一週期要多條串流，不管是 Web UI 定 GUI」。舊協定按（券商, 週期）只留一條，第二份
+  即 `stream_busy`，界面只能倒數等名額（「futu 的 1m 串流名額尚未釋放，約 168 秒後自動訂閱…」），兩邊根數填唔一樣就
+  睇唔到同一張圖。
+- **適配器（futu）**：訂閱由「按 ktype 佔額」改為按 **（代碼, 週期）引用計數**（`brokery/brokers/futu_broker.py`）：
+  `held = tuple(dict.fromkeys(codes))`，喺 `self._stream_lock` 之下 `self._subs[(code, ktype)] += 1`，且先於取起點；
+  `finally` 逐鍵減返，只有歸零者先 `self._ctx.unsubscribe(...)`，串流數為 0 先 `stop()`。故同週期並行時唔會蓋走別份
+  仍需要嘅訂閱（舊行為「同週期第二份即拒」已移除）。IB 逐個（代碼, 週期）各一次 `reqHistoricalData(keepUpToDate)`，
+  本來已可並行；`core` 冇改。
+- **閘道**：`app.state.streams` 與每連接 `workers` 的鍵由（券商, 週期）改為**請求簽名**
+  `stream_key(broker, ktype, codes, count, autype, raw)`（`brokery_api/app.py`）。同簽名照樣 fan-out（`subscribed` 帶
+  `shared`）／接手（帶 `resumed`）；簽名不同即另起一條並行 worker；`stream_busy` 由閘道彻底消失（`release()` 以身份為
+  守，唔會誤退別人嘅 worker）。`closed` 帧仍附 `release_in`（該執行緒收尾尚差嘅秒數），只係客戶端不再照它行事。
+- **界面：名額 UX 全部刪除，唔留半截**：桌面 GUI 走 `KlinePane.quota`／`quota_timer`／`retry_stream` 與
+  `GridPane.quotas`／`grid_quota_left`／`wait_grid_quota`，三份字庫走 `kline.quota_wait`／`kline.wait_cancelled`
+  （76 → **74 鍵**）；Web UI 走 `klinePane`／`gridPane` 的 `waitQuota`／`clearQuota` 與 `stream_busy` 分支。
+  `brokery_gui/stream.py` 的 `_open` 由 set 改為計數（同一週期有兩條時唔會誤判「已收齊」而收走連接）。
+- **剩下被拒只有「改參數先解決到」嘅協定錯誤**（`ktype_unsupported`、`broker_disabled`、`bad_request`）：兩邊一律原樣
+  顯示閘道點名嘅原因、唔自動重送訂閱、亦唔解鎖按鈕（用戶撳「停止」即收返呢條連接）。界面自己重送只會出現用戶看不見
+  嘅訂閱。
+- **多週期頁照樣按 ktype 去重**：一格一週期即同簽名，本來就係同一份串流，故呢次唔需要協定擴展（冇 stream id，`stop`
+  亦唔帶 `codes`）。
+- 驗收：`run_stream_kline.py` 補三條（同週期第二份可並行／並行期間退訂閱 0 次／全部結束後退訂閱 1 次），整檔仍為
+  35 PASS / 5 FAIL（5 個全係 IB 連唔到 TWS，屬環境而非代碼）。`run_api.py` 108 → **112**（同週期兩格不同代碼可並行、
+  各自訂閱一次並各推自己代碼、`stop` 帶 ktype 即逐條 `closed`、換根數即另起一條、接手唔另訂閱）。`run_gui.py`
+  115 → **120**（多週期頁已佔住 `futu/1m` 時另一頁照樣訂閱、兩條各自收推送各 +2 根、停一條唔影響另一條、已收返嘅
+  連接唔再被填、協定錯誤原樣呈現且唔被自動重送）。`run_webui.py` 106 → **111**（存根按連接記訂閱，另加 `/push` 代替
+  券商推送以核對兩條各自收到與「已收返嘅連接唔再被填」；推送必須帶新時間戳——同一 `ts` 只係覆蓋，唔會多根）。

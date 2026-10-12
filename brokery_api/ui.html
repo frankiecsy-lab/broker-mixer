@@ -298,8 +298,14 @@ function stopStream() {
   streamIdle();
 }
 
-function startStream() {
+// 先取歷史再訂閱：update 只帶最近 count 根，直接訂閱即得返一張只有最近幾十根的圖；普通行情軟件一律
+// 係「歷史 + 實時」合併成一條連續序列。連歷史都無 bar 即唔訂閱（原因已由 loadKline 點名）。
+async function startStream() {
   if (!state.key) { say('請先填自訂金鑰', false); return; }
+  $('k-stream').disabled = true;
+  await loadKline();
+  $('k-stream').disabled = false;
+  if (!kline.store || !kline.store.size) return;
   const url = new URL('/stream', location.origin);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   url.searchParams.set('api_key', state.key);  // 瀏覽器不能為握手自訂標頭，故走查詢參數
@@ -321,11 +327,10 @@ function startStream() {
       say(msg.message);
       streamIdle();
     } else if (msg.event === 'closed') {
-      say(`已停止 ${msg.broker} 串流（約 ${msg.release_in} 秒後可重新訂閱同一券商）`);
+      say(`已停止 ${msg.broker} ${msg.ktype} 串流`);
       streamIdle();
     } else {
       say(msg.message || msg.event, false);
-      if (msg.event === 'error' && String(msg.message).startsWith('stream_busy')) streamIdle();
     }
   };
   ws.onclose = () => { if (state.ws === ws) streamIdle(); };

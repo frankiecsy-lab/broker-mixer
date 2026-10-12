@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- brokery_webui 主頁：上方為菜單（戶口清單、標的列表、K 線拉取、K 線串流、K 線圖、BROKER 管理）。
+<!-- brokery_webui 主頁：上方為菜單（戶口清單、標的列表、K 線拉取、K 線串流、K 線串流（多週期）、BROKER 管理）。
      所有資料均由本應用的 /api/* 轉發閘道取得，串流由 /ws/stream 代理，頁面不含任何金鑰，也不直接連接券商。 -->
 <html lang="zh-Hant">
 <head>
@@ -9,6 +9,8 @@
 <!-- 圖表規格只有一份：由本應用的 /static 取 brokery/static/ 下的本地副本（無 CDN，離線與 Docker 都畫到圖） -->
 <script src="/static/echarts.min.js"></script>
 <script src="/static/chart.js"></script>
+<!-- 多週期頁的格子容器（一格一週期 + 每格上方的週期按鈕）與圖表規格同源，同樣只有一份 -->
+<script src="/static/chart_grid.js"></script>
 <style>
   :root { --bg:#12161c; --panel:#1a2028; --line:#2b3441; --fg:#dfe6ef; --dim:#8a97a8;
           --up:#e0524a; --down:#2ea36f; --accent:#4b9ece; }
@@ -54,6 +56,20 @@
   th:first-child, td:first-child { text-align:left; }
   th { color:var(--dim); font-weight:500; position:sticky; top:0; background:var(--panel); }
   .scroll { max-height:70vh; overflow:auto; }
+  /* 多週期頁：3×3 九格同時串流，下方不列 DF。格子由 brokery/static/chart_grid.js 生成，呢度只負責排版：
+     一行三格、不足九格時由 grid-auto-rows 自己加行（只聲明一個週期者即一格佔一行），唔使界面分情況。 */
+  #kg-grid { height:76vh; }
+  .brokery-grid { display:grid; height:100%; grid-template-columns:repeat(3,1fr); grid-auto-rows:1fr; gap:6px; }
+  .brokery-cell { display:flex; flex-direction:column; min-width:0; min-height:0;
+                  border:1px solid var(--line); border-radius:4px; overflow:hidden; }
+  .brokery-tabs { display:flex; flex-wrap:nowrap; gap:2px; padding:3px 3px 0; }
+  .brokery-tabs button { flex:1 1 auto; min-width:0; padding:2px 0; cursor:pointer;
+                         font:10px/1.2 inherit; color:var(--dim); background:#0f1318;
+                         border:1px solid var(--line); border-radius:3px; }
+  .brokery-tabs button.on { color:var(--fg); background:#2b3a4d; border-color:#3d566f; }
+  .brokery-note { padding:1px 4px; font-size:10px; color:var(--dim);
+                  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .brokery-pane { flex:1 1 auto; min-height:0; }
 </style>
 </head>
 <body>
@@ -69,7 +85,7 @@
   <button data-page="symbols">標的列表</button>
   <button data-page="kline-pull">K 線拉取</button>
   <button data-page="kline-stream">K 線串流</button>
-  <button data-page="kline-chart">K 線圖</button>
+  <button data-page="kline-grid">K 線串流（多週期）</button>
   <button data-page="brokers">BROKER 管理</button>
 </nav>
 
@@ -116,14 +132,16 @@
     <div class="panel"><div class="scroll" id="s-table"></div></div>
   </section>
 
-  <!-- K 線三頁的預設值一律寫在控件上（標的 HK.HSImain、週期 1m、根數 1000）：換券商不會改變它，
-       且能力聲明讀取失敗時仍有可用的預設。週期選項其後由 /api/capabilities 補齊，保留 1m 為選中。
-       下方表格按時間反序（最新在最上）；這屬顯示層，取回的资料仍按時間升序。 -->
+  <!-- K 線兩頁的預設值一律寫在控件上（標的 HK.HSImain、週期 1m、根數 1000）：換券商不會改變它，
+       且能力聲明讀取失敗時仍有可用的預設。根數可任填（上限 100000，與桌面 GUI 一致）：實際深度不足時
+       閘道在訊息中點名該來源該週期可得幾多根，頁面原樣顯示，不自造第二套說法。
+       週期選項其後由 /api/capabilities 補齊，保留 1m 為選中。
+       下方表格列全部行並按時間反序（最新在最上）；反序屬顯示層，取回的资料仍按時間升序。 -->
   <section id="page-kline-pull">
     <div class="bar">
       <label>代碼<input type="text" id="kp-code" class="txt" value="HK.HSImain"></label>
       <label>週期<select id="kp-ktype"><option value="1m" selected>1m</option></select></label>
-      <label>根數<input type="number" id="kp-count" class="num" min="1" max="1000" value="1000"></label>
+      <label>根數<input type="number" id="kp-count" class="num" min="1" max="100000" value="1000"></label>
       <label>券商<select id="kp-broker"></select></label>
       <button class="act" id="kp-load">取得</button>
       <span id="kp-sources"></span>
@@ -133,37 +151,47 @@
   </section>
 
   <!-- 串流經本應用的 /ws/stream 代理連閘道：金鑰只在服務端。每條 update 帶的是該代碼目前完整的 bar，
-       一律經合併規則處理（同時間覆蓋、保留最新 N 根），故不會把已取得的歷史縮返最近幾十根。 -->
+       一律經合併規則處理（同時間覆蓋、保留最新 N 根，N 即上方所填的根數），故不會把已取得的歷史縮返最近幾十根。
+       訂閱一律先取歷史再開串流，故圖表上永遠是一條連續序列；圖表在表格上方，同一份序列，且所請求的根數全部喺圖上。
+       一份串流由「請求簽名」（券商、週期、代碼、根數、復權）界定：同一券商同一週期照樣可並行多條（例如另一頁
+       或另一格以不同根數或代碼訂閱），再無名額可等。協定錯誤（ktype_unsupported、broker_disabled、bad_request）
+       原樣呈現，參數由用戶改，頁面不自動重送訂閱（與桌面 GUI 同一口徑）。 -->
   <section id="page-kline-stream">
     <div class="bar">
       <label>代碼<input type="text" id="ks-code" class="txt" value="HK.HSImain"></label>
       <label>週期<select id="ks-ktype"><option value="1m" selected>1m</option></select></label>
-      <label>根數<input type="number" id="ks-count" class="num" min="1" max="1000" value="1000"></label>
+      <label>根數<input type="number" id="ks-count" class="num" min="1" max="100000" value="1000"></label>
       <label>券商<select id="ks-broker"></select></label>
       <button class="act" id="ks-start">訂閱</button>
       <button class="act" id="ks-stop" disabled>停止</button>
       <span id="ks-sources"></span>
     </div>
     <div class="msg" id="ks-msg"></div>
-    <div class="panel"><div class="scroll" id="ks-table"></div></div>
+    <div class="panel">
+      <div class="chart" id="ks-chart"></div>
+      <div class="scroll" id="ks-table"></div>
+    </div>
   </section>
 
-  <section id="page-kline-chart">
+  <!-- 多週期頁：一次過串流 3×3 = 九個 K 線圖，流程同「K 線串流」（先取歷史、再開串流），但下方不列 DF，
+       每個小圖上方有一排水平週期按鈕。格子與週期按鈕一律由該券商聲明的 stream_ktypes 決定（順序照
+       /api/capabilities 返回者）：界面不自行排列週期，也不憑空補出會被閘道拒絕的週期（只聲明 1m 者即一格）。
+       根數為一個共用輸入（預設 300）：九格各取 1000 根會令來源逐格分頁，首次開始明顯變慢。
+       一個「開始／停止」管全部格子；逐格只有週期按鈕，換一格即只重取嗰格、只退該週期的串流。
+       九個週期只開一條 /ws/stream：瀏覽器對同一來源的連線數有限（HTTP/1.1 約 6 條），九條會連不上，
+       而閘道按請求簽名界定一份串流，一條連接可有多個訂閱，每份 update 自帶 ktype 供本頁分派。
+       同一券商同一週期亦可與本頁並行：其他頁以不同根數或代碼訂閱同一週期時，兩邊各自收到推送。 -->
+  <section id="page-kline-grid">
     <div class="bar">
       <label>代碼<input type="text" id="kg-code" class="txt" value="HK.HSImain"></label>
-      <label>週期<select id="kg-ktype"><option value="1m" selected>1m</option></select></label>
-      <label>根數<input type="number" id="kg-count" class="num" min="1" max="1000" value="1000"></label>
+      <label>根數（每格）<input type="number" id="kg-count" class="num" min="1" max="100000" value="300"></label>
       <label>券商<select id="kg-broker"></select></label>
-      <button class="act" id="kg-load">取歷史</button>
-      <button class="act" id="kg-start">訂閱實時</button>
-      <button class="act" id="kg-stop" disabled>停止訂閱</button>
+      <button class="act" id="kg-start">開始</button>
+      <button class="act" id="kg-stop" disabled>停止</button>
       <span id="kg-sources"></span>
     </div>
     <div class="msg" id="kg-msg"></div>
-    <div class="panel">
-      <div class="chart" id="kg-chart"></div>
-      <div class="scroll" id="kg-table"></div>
-    </div>
+    <div class="panel"><div id="kg-grid"></div></div>
   </section>
 
   <!-- 券商開關是全域喜好（存放在閘道端一個 JSON 檔，三個界面共用同一份）：被停用者不會被任何動作經過，
@@ -276,13 +304,13 @@ function loadAccounts() {
 const KIND_LABEL = { stock: '股票', future: '期貨', index: '指數' };
 // 能力聲明以 symbol_type 的大寫常量表達（見 brokers/codes.py），與選項值大小寫不同，必須顯式對應。
 const KIND_CAPABILITY = { stock: 'STOCK', future: 'FUTURE', index: 'INDEX' };
-let brokerCaps = {};              // 券商 → 其聲明的品種；由 /api/capabilities 取得，頁面不硬寫券商名單
+let brokerCaps = {};              // 券商 → 其聲明的品種與可串流週期；由 /api/capabilities 取得，頁面不硬寫券商名單
 let ktypes = [];                  // 閘道可用的 K 線週期：同樣只由能力聲明決定，不憑空列舉
 const seenMarkets = new Set();    // 只列實際返回過的市場，不憑空給出選項
 // 券商下拉框只有一處填充：/api/capabilities 只返回生效的券商，所以在 BROKER 管理停用一家後，
 // 所有頁面的選項都會一併少一家，不需要逐頁處理。
 const BROKER_SELECTS = ['s-broker', 'kp-broker', 'ks-broker', 'kg-broker'];
-const KTYPE_SELECTS = ['kp-ktype', 'ks-ktype', 'kg-ktype'];
+const KTYPE_SELECTS = ['kp-ktype', 'ks-ktype'];   // 多週期頁沒有週期下拉框：格子即週期，見 gridPane
 
 async function loadBrokers(force) {
   if (!Object.keys(brokerCaps).length || force) {
@@ -298,6 +326,7 @@ async function loadBrokers(force) {
   }
   renderBrokers();
   renderKtypes();
+  renderGrid();
 }
 
 // 券商選項按各家的能力聲明標註：不提供所選品種的選項設為不可選，原因在選項上寫明，
@@ -405,15 +434,16 @@ async function refreshCodes() {
   }
 }
 
-// ---------- K 線（拉取／串流／圖表三頁同一流程，只有控件前綴與是否畫圖不同）----------
+// ---------- K 線（拉取／串流兩頁同一流程，只有控件前綴與是否畫圖不同）----------
+// 串流頁在表格上方畫圖，拉取頁只列表格。
 // 圖表與表格一律交共用規格 brokery/static/chart.js：呢度只攞數同餵數，唔再自己拼 ECharts option。
-// 每頁的序列經同一個 store 合併（key=(代碼,時間)，同時間覆蓋，保留最新 1000 根），所以一條只帶最近
-// count 根的 update 唔會把已拉取的 1000 根歷史縮返最近幾十根。
-const K_TABLE_ROWS = 30;   // 只顯示最新 30 行：1000 根全放進 DOM 會令頁面卡住
-
+// 每頁各持一份控件、序列與連接（即桌面 GUI 的 KlinePane／KlineChart 喺頁面的對應物）：兩頁互不影響。
+// 每頁的序列經同一個 store 合併（key=(代碼,時間)，同時間覆蓋，保留最新 N 根，N 即該頁所填的根數），
+// 所以一條只帶最近 count 根的 update 唔會把已拉取的歷史縮返最近幾十根。
 function klinePane(prefix, options) {
   const el = (suffix) => $(`${prefix}-${suffix}`);
-  const pane = { store: window.BrokeryChart ? BrokeryChart.store(1000) : null, key: '', ws: null };
+  const pane = { store: window.BrokeryChart ? BrokeryChart.store(1000) : null, key: '',
+                 ws: null, wants: false };
   const controls = () => ({ code: el('code').value.trim(), ktype: el('ktype').value,
                             count: Number(el('count').value) || 1000, broker: el('broker').value });
 
@@ -428,12 +458,15 @@ function klinePane(prefix, options) {
       if (!window.echarts || !payload.rows.length) {
         el('chart').innerHTML = '<div class="msg">無圖表（未能載入 ECharts，或返回不含 OHLC）</div>';
       } else {
-        BrokeryChart.render(el('chart'), payload, null, { ktype: controls().ktype });
+        // start: 0 即所請求的根數全部喺圖上（預設 60 根嘅可視窗只屬預設值，唔該跟用戶要的根數）；
+        // dataZoom 照可縮放。ktype 屬該次輸入的一部分，故每次都要交（換週期後 x 軸格式先至跟住改）。
+        BrokeryChart.render(el('chart'), payload, null, { ktype: controls().ktype, start: 0 });
       }
     }
     // 按時間反序（最新在最上）屬顯示層：store 內部與取回的资料仍按時間升序，圖表與跨券商對齊靠升序。
+    // 表格列全部行，唔再截返最前幾十行：攞幾多根即見幾多行，與上方的根數統計一致。
     const reversed = BrokeryChart.desc(payload);
-    renderTable(el('table'), { columns: reversed.columns, rows: reversed.rows.slice(0, K_TABLE_ROWS) });
+    renderTable(el('table'), { columns: reversed.columns, rows: reversed.rows });
     renderCounts(el('sources'), reversed, '根');
   };
 
@@ -448,6 +481,12 @@ function klinePane(prefix, options) {
 
   pane.pull = async () => {
     const c = controls();
+    // 換標的或換週期即換咗一個序列：取數前先清，失敗時先至唔會喺新標的嘅錯誤下面留返舊標的嘅 bar，
+    // 「無 bar 即唔訂閱」嘅判斷亦先至屬實。
+    const key = `${c.code}|${c.ktype}`;
+    if (pane.store && pane.key !== key) { pane.store.clear(); pane.key = key; pane.paint(); }
+    // 合併器的上限要跟本次請求的根數：寫死 1000 時取 3000 根會被裁返 1000 根（與桌面 GUI 同一口徑）。
+    if (pane.store) pane.store.setLimit(c.count);
     const params = new URLSearchParams({ code: c.code, ktype: c.ktype, count: c.count, broker: c.broker });
     setMsg(el('msg'), `向 ${c.broker} 取 ${c.code} 的 ${c.ktype} K 線（${c.count} 根）…`, 'busy');
     let body;
@@ -456,24 +495,40 @@ function klinePane(prefix, options) {
     } catch (err) {
       setStatus('閘道不可達', false);
       setMsg(el('msg'), `請求失敗：${err}`, 'err');
-      return;
+      return false;
     }
-    if (!body.status) { setStatus('取數失敗', false); setMsg(el('msg'), body.message, 'err'); return; }
+    if (!body.status) { setStatus('取數失敗', false); setMsg(el('msg'), body.message, 'err'); return false; }
     setStatus('已連接閘道', true);
     setMsg(el('msg'), body.message);
     pane.merge(body.data);
+    return true;
   };
 
   if (options.stream) {
     // 串流一律經本應用的 /ws/stream 代理：金鑰只在服務端，放進頁面即等於公開。協定（subscribed/
-    // update/end…）與每券商名額一律由閘道判定，呢邊只按事件顯示與合併，不改內容。
-    pane.idle = () => { pane.ws = null; el('start').disabled = false; el('stop').disabled = true; };
-    pane.start = () => {
+    // update/end…）與一份串流的界定一律由閘道判定（見 brokery_api/app.py 的 stream_key），呢邊只按事件顯示與
+    // 合併，不改內容。
+    pane.idle = () => {
+      pane.ws = null;
+      pane.wants = false;
+      el('start').disabled = false;
+      el('stop').disabled = true;
+    };
+    // 先取歷史再訂閱：update 只帶最近 count 根，直接訂閱即得返一張只有最近幾十根的圖；普通行情軟件
+    // 一律係「歷史 + 實時」合併成一條連續序列。連歷史都無 bar 即唔訂閱，唔好留一張會被誤認為完整
+    // 歷史嘅圖（失敗原因已由 pull 點名）。
+    pane.start = async () => {
       if (pane.ws) return;
+      el('start').disabled = true;
+      await pane.pull();
+      if (!pane.store || !pane.store.size) { el('start').disabled = false; return; }
       const c = controls();
       const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/stream`);
-      ws.onopen = () => ws.send(JSON.stringify({ action: 'subscribe', codes: [c.code], ktype: c.ktype,
-                                                 count: c.count, broker: c.broker }));
+      ws.onopen = () => {
+        pane.wants = true;
+        ws.send(JSON.stringify({ action: 'subscribe', codes: [c.code],
+                                 ktype: c.ktype, count: c.count, broker: c.broker }));
+      };
       ws.onmessage = (event) => {
         const msg = JSON.parse(event.data);
         if (msg.event === 'update') {   // update 只帶最近 count 根：照樣經 store 合併，唔會蓋走已拉取嘅歷史
@@ -485,9 +540,9 @@ function klinePane(prefix, options) {
           pane.say(msg.message || `已停止 ${msg.broker} 串流`);
           pane.idle();
         } else {
+          // 協定錯誤（ktype_unsupported、broker_disabled、bad_request）原樣呈現：原因由閘道點名，參數由用戶改，
+          // 頁面不自動重送訂閱（重送只會多一條用戶睇唔見嘅訂閱），亦唔解鎖按鈕——撳「停止」先收返呢條連接。
           pane.say(msg.message || msg.event, false);
-          // 同一券商同時只容許一條串流：名額要待上一條的執行緒結束才釋放，此時要解鎖按鈕讓用戶再試。
-          if (msg.event === 'error' && String(msg.message).startsWith('stream_busy')) pane.idle();
         }
       };
       ws.onerror = () => pane.say('串流連線失敗：請確認閘道已啟動', false);
@@ -496,6 +551,7 @@ function klinePane(prefix, options) {
       el('start').disabled = true;
       el('stop').disabled = false;
     };
+    // 「停止」即收返呢條連接（idle() 解鎖按鈕）：協定錯誤之後用戶要靠佢改參數重試。
     pane.stop = () => {
       if (!pane.ws) return;
       pane.ws.send(JSON.stringify({ action: 'stop' }));
@@ -506,11 +562,201 @@ function klinePane(prefix, options) {
   return pane;
 }
 
+// ---------- K 線串流（多週期）：一格一週期，九格共用一條 /ws/stream ----------
+// 與 klinePane 的根本分別係狀態以「格」為單位：一格一份序列（store）、一格一個 ktype。下方不列 DF，故只有
+// 圖表與每格上方一行提示（取數失敗只寫喺嗰格，唔搶走整頁的訊息）。
+// 格子與週期按鈕由 brokery/static/chart_grid.js 生成，清單只取該券商聲明的 stream_ktypes：界面不自行排列、
+// 不憑空補週期（只聲明 1m 者即只得一格，也撳唔到不支持的週期）。
+function gridPane(prefix) {
+  const el = (suffix) => $(`${prefix}-${suffix}`);
+  const pane = { grid: null, layout: [], current: [], stores: [], keys: [], ws: null, wants: false };
+  const controls = () => ({ code: el('code').value.trim(), count: Number(el('count').value) || 300,
+                            broker: el('broker').value });
+
+  pane.say = (text, ok) => {
+    setStatus(ok === false ? '取數失敗' : '已連接閘道', ok !== false);
+    setMsg(el('msg'), text, ok === false ? 'err' : '');
+  };
+
+  // 該券商聲明可串流的週期：沒有聲明即不畫格子（界面不憑空造出會被閘道拒絕的週期）。
+  pane.declared = () => ((brokerCaps[controls().broker] || {}).stream_ktypes || []).map(String);
+
+  // 能力聲明每次進入頁面都會重讀：清單未變即不重建，重建會清走各格已合併的序列（即已取到的歷史）。
+  pane.build = () => {
+    const ktypes = pane.declared();
+    if (ktypes.join('|') === pane.layout.join('|')) return;
+    pane.layout = ktypes;
+    pane.current = ktypes.slice();
+    pane.stores = ktypes.map(() => (window.BrokeryChart ? BrokeryChart.store(controls().count) : null));
+    pane.keys = ktypes.map(() => '');
+    if (!window.BrokeryGrid) {
+      el('grid').innerHTML = '<div class="msg">無圖表（未能載入 BrokeryGrid）</div>';
+      return;
+    }
+    pane.grid = BrokeryGrid.build(el('grid'), { ktypes, onPick: (index, ktype) => pane.pick(index, ktype) });
+    pane.summary();
+  };
+
+  // 九格沒有表格可統計，控制列這一句即本頁唯一的取數摘要（格子數以券商聲明為準，每格根數以輸入為準）。
+  pane.summary = () => {
+    el('sources').innerHTML = `<span class="chip"><b>${pane.layout.length} 格</b>`
+                            + `<i>每格 ${controls().count} 根</i></span>`;
+  };
+
+  pane.note = (index, text) => { if (pane.grid) pane.grid.note(index, text); };
+
+  // 只重畫一格：ktype 省略時由容器沿用該格現有的週期（換週期由 pick 交，串流更新不需要交）。
+  pane.paintCell = (index) => {
+    if (!pane.grid) return;
+    const payload = pane.stores[index] ? pane.stores[index].payload() : { columns: [], rows: [] };
+    pane.grid.set(index, payload);
+  };
+
+  // 一格一份序列：先逐格取歷史，全部返回先至開一條串流（同單格串流頁「先取歷史再開串流」同一口徑）。
+  // 逐格順序而非並行：富途 OpenD 與 IB 都不接受同一連線上的並行請求（與桌面 GUI 同一做法）。
+  pane.pullCell = async (index) => {
+    const c = controls();
+    const ktype = pane.current[index];
+    const store = pane.stores[index];
+    if (store) {
+      // 換標的或換週期即換咗一個序列：唔清走舊 bar 會喺同一條軸上混埋兩份唔同週期的資料。
+      const key = `${c.code}|${ktype}`;
+      if (pane.keys[index] !== key) { store.clear(); pane.keys[index] = key; }
+      // 合併器的上限要跟本次請求的根數：寫死會把多要的根數裁走（與 klinePane 同一口徑）。
+      store.setLimit(c.count);
+    }
+    pane.note(index, `向 ${c.broker} 取 ${ktype}…`);
+    const params = new URLSearchParams({ code: c.code, ktype, count: c.count, broker: c.broker });
+    let body;
+    try {
+      body = await (await fetch(`/api/kline?${params}`)).json();
+    } catch (err) {
+      pane.note(index, `請求失敗：${err}`);
+      return false;
+    }
+    if (!body.status) { pane.note(index, body.message); return false; }
+    pane.note(index, '');
+    if (store) store.add(body.data);
+    pane.paintCell(index);
+    return true;
+  };
+
+  // 訂閱照各格而家顯示的週期送：兩格顯示同一週期時只送一次（同一份請求由閘道接手，重複送只會多一條用戶
+  // 睇唔見嘅訂閱），而該週期的 update 本來就會同時填兩格。
+  pane.send = (wanted) => {
+    if (!pane.ws || pane.ws.readyState !== WebSocket.OPEN) return;
+    const c = controls();
+    for (const ktype of wanted) {
+      pane.ws.send(JSON.stringify({ action: 'subscribe', codes: [c.code], ktype,
+                                    count: c.count, broker: c.broker }));
+    }
+  };
+
+  pane.start = async () => {
+    if (pane.ws) return;
+    el('start').disabled = true;
+    pane.build();   // 格子以而家所選的券商為準（能力聲明可能已在 BROKER 管理後改過）
+    if (!pane.layout.length) {
+      pane.say('該券商沒有聲明可串流的週期', false);
+      el('start').disabled = false;
+      return;
+    }
+    for (let index = 0; index < pane.layout.length; index += 1) await pane.pullCell(index);
+    const withBars = pane.stores.filter((store) => store && store.size).length;
+    if (!withBars) {
+      // 連歷史都沒有 bar 即不訂閱：不留一張會被誤認為完整歷史的圖（失敗原因已寫喺各格上面）。
+      pane.say('沒有返回任何 K 線，故未訂閱', false);
+      el('start').disabled = false;
+      return;
+    }
+    // 九個週期只開一條 /ws/stream：瀏覽器對同一來源的連線數有限（HTTP/1.1 約 6 條），九條會直接連不上；
+    // 閘道按請求簽名界定一份串流，一條連接可有多個訂閱（見 brokery_api/app.py 的 stream_key）。
+    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/stream`);
+    ws.onopen = () => { pane.wants = true; pane.send([...new Set(pane.current)]); };
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      if (msg.event === 'update') {
+        // 每份 update 自帶 ktype：只餵顯示該週期的格子（兩格同週期即共用同一份推送）。
+        const targets = pane.current.map((value, i) => (value === String(msg.ktype) ? i : -1)).filter((i) => i >= 0);
+        if (!targets.length) return;
+        let total = 0;
+        for (const index of targets) {
+          if (pane.stores[index]) pane.stores[index].add(msg.data);   // 同 klinePane：照樣合併，唔會蓋走歷史
+          pane.paintCell(index);
+          total = Math.max(total, pane.stores[index] ? pane.stores[index].size : 0);
+        }
+        pane.say(`已更新 ${msg.ktype}（本次 ${(msg.data.rows || []).length} 根，合併後 ${total} 根）`);
+      } else if (msg.event === 'subscribed') {
+        pane.say(`已訂閱 ${msg.broker} ${msg.codes.join(',')} ${msg.ktype}（${msg.seconds} 秒後自動結束）`);
+      } else if (msg.event === 'end' || msg.event === 'closed') {
+        // 一個週期結束不等於整條連接結束：換一格週期時只停該週期，其餘各格照舊推送，
+        // 所以這裡既不報「已停止」，也不解鎖按鈕（那會把仍在推送的各格一併停掉）。
+        // 「停止」管全部格子，其收尾提示由 stop() 自己寫；按鈕解鎖交給 onclose。
+      } else {
+        // 協定錯誤（ktype_unsupported、broker_disabled、bad_request）原樣寫喺控制列：原因由閘道點名，參數由用戶改，
+        // 頁面不自動重送訂閱（重送只會多一條用戶睇唔見嘅訂閱），亦唔解鎖按鈕——撳「停止」先收返呢條連接。
+        pane.say(msg.message || msg.event, false);
+      }
+    };
+    ws.onerror = () => pane.say('串流連線失敗：請確認閘道已啟動', false);
+    ws.onclose = () => { if (pane.ws === ws) pane.idle(); };
+    pane.ws = ws;
+    el('stop').disabled = false;
+  };
+
+  // 逐格只有週期按鈕：換一格即只重取那一格、只退該週期的串流，其餘各格不受影響。
+  // 舊週期只有再沒有其他格子顯示時才退（兩格同週期時退了另一格就沒有推送）；新週期若已被另一格訂閱著，
+  // 即沿用同一份推送，不需要也不能重複訂閱（同一份請求由閘道接手）。
+  pane.pick = async (index, ktype) => {
+    // 只認該券商聲明的清單（即按鈕的來源），唔可以只認「而家邊格顯示緊咩」：
+    // 若某週期已被別格換走，再揀返佢就永遠換唔返，而按鈕已經高亮咗，界面即刻矛盾。
+    if (index < 0 || index >= pane.current.length || !pane.layout.includes(ktype)) return;
+    const streaming = Boolean(pane.wants && pane.ws && pane.ws.readyState === WebSocket.OPEN);
+    const previous = pane.current[index];
+    pane.current[index] = ktype;
+    const shownByOtherCell = (name) => pane.current.some((value, i) => i !== index && value === name);
+    if (streaming && !shownByOtherCell(previous)) {
+      pane.ws.send(JSON.stringify({ action: 'stop', broker: controls().broker, ktype: previous }));
+    }
+    await pane.pullCell(index);
+    if (streaming && !shownByOtherCell(ktype)) pane.send([ktype]);
+  };
+
+  // 一個「停止」收齊全部格子（逐格只有週期按鈕，沒有逐格停止）：裸 stop 停這條連接上的全部訂閱。
+  // 收尾提示由這裡寫，唔等 closed 幀：瀏覽器一 close() 就收起連接，代理隨即拆掉上游，閘道逐個回的
+  // closed 幀未必返到嚟（與桌面 GUI 同一口徑：停止的提示唔依賴閘道回幀）。
+  pane.stop = () => {
+    if (!pane.ws) return;
+    const broker = controls().broker;
+    pane.wants = false;
+    if (pane.ws.readyState === WebSocket.OPEN) pane.ws.send(JSON.stringify({ action: 'stop' }));
+    pane.ws.close();
+    pane.idle();
+    pane.say(`已停止 ${broker} 串流`);
+  };
+
+  pane.idle = () => {
+    pane.ws = null;
+    pane.wants = false;
+    el('start').disabled = false;
+    el('stop').disabled = true;
+  };
+  return pane;
+}
+
 const panes = {
   'kline-pull': klinePane('kp', {}),
-  'kline-stream': klinePane('ks', { stream: true }),
-  'kline-chart': klinePane('kg', { chart: true, stream: true }),
+  'kline-stream': klinePane('ks', { chart: true, stream: true }),
+  'kline-grid': gridPane('kg'),
 };
+
+// 格子清單即該券商聲明的可串流週期，所以換券商要即刻換格子：與券商下拉框一樣由 loadBrokers() 統一處理。
+// 只在該頁可見時重建：其他頁面進入時同樣會重讀能力聲明，在看不見的容器起九個圖表實例是白費，
+// 而且零尺寸的實例要等回到本頁才 resize 得到。
+function renderGrid() {
+  if (!document.querySelector('#page-kline-grid.active')) return;
+  panes['kline-grid'].build();
+}
 
 // ---------- BROKER 管理 ----------
 // 開關是全域喜好（一個 JSON 檔，三個界面共用）：寫檔後 core 即時過濾，所以本頁寫完只要重畫開關與
@@ -560,8 +806,14 @@ function show(page) {
   if (page === 'accounts') loadAccounts();
   // 先取能力聲明，券商選項填好後才讀快照與清單：兩者都以所選券商為準。
   if (page === 'symbols') loadBrokers().then(() => { loadSymbols(); loadSnapshotMeta(); });
-  // K 線三頁只填控件（券商與週期選項），不自動取數：1000 根需數秒，由用戶按「取得」才向券商取數。
-  if (['kline-pull', 'kline-stream', 'kline-chart'].includes(page)) loadBrokers();
+  // K 線兩頁只填控件（券商與週期選項），不自動取數：1000 根需數秒，由用戶按「取得」或「訂閱」才取數。
+  if (['kline-pull', 'kline-stream'].includes(page)) loadBrokers();
+  // 多週期頁要等能力聲明返嚟先至起得到格子（格子清單即該券商聲明的可串流週期），起完再補一次 resize：
+  // 本頁的格子高度由容器固定，離開再回來時 ECharts 不會自己重算尺寸。同樣不自動取數。
+  if (page === 'kline-grid') loadBrokers().then(() => {
+    panes['kline-grid'].build();
+    if (window.BrokeryChart) BrokeryChart.resizeAll();
+  });
   if (page === 'brokers') loadPrefs();
 }
 
@@ -611,9 +863,12 @@ $('s-interval').addEventListener('input', () => { lastAuto.symbols = Date.now() 
 $('kp-load').addEventListener('click', () => withBusy($('kp-load'), panes['kline-pull'].pull));
 $('ks-start').addEventListener('click', panes['kline-stream'].start);
 $('ks-stop').addEventListener('click', panes['kline-stream'].stop);
-$('kg-load').addEventListener('click', () => withBusy($('kg-load'), panes['kline-chart'].pull));
-$('kg-start').addEventListener('click', panes['kline-chart'].start);
-$('kg-stop').addEventListener('click', panes['kline-chart'].stop);
+$('kg-start').addEventListener('click', panes['kline-grid'].start);
+$('kg-stop').addEventListener('click', panes['kline-grid'].stop);
+// 換券商即換咗可串流的週期清單：格子與每格上方的週期按鈕要即刻跟住重建，不需要用戶重新擷「開始」。
+$('kg-broker').addEventListener('change', renderGrid);
+// 摘要裡的每格根數要跟著輸入變：唔使撳「開始」先更新（取數仍由「開始」決定）。
+$('kg-count').addEventListener('input', () => panes['kline-grid'].summary());
 $('b-apply').addEventListener('click', applyPrefs);
 $('b-reload').addEventListener('click', loadPrefs);
 setInterval(tick, 1000);

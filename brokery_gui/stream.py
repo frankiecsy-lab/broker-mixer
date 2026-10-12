@@ -18,16 +18,18 @@ from brokery.config import get_settings
 
 
 class StreamClient(QObject):
-    """一條 /stream 連接：start() 訂閱，stop() 結束；事件以信號交回界面。
+    """一條 /stream 連接：start()/subscribe() 訂閱，unsubscribe()/stop() 結束；事件以信號交回界面。
 
-    同一券商在閘道同時只容許一條串流，名額要待上一條結束才釋放，故界面必須先 stop() 再換參數重試；
-    本模組不代界面重連，避免用戶看不見的连接反覆發生。
+    閘道按「請求簽名」（券商、週期、代碼、根數、復權、raw）界定一份串流：同簽名即同一份請求，再訂閱即接手
+    仍在跑的那條（不另向券商訂閱）；簽名不同即另一條，同一券商同一週期可並行多條，不會再被拒。多週期界面
+    九個週期因此仍只經本模組這一條連接。本模組不代界面重連，避免用戶看不見的连接反覆發生。
     """
 
     subscribed = Signal(dict)   # {"broker","codes","ktype","seconds"}
     update = Signal(dict)       # {"code","data":{columns,rows}}：該代碼目前完整的 bar
     closed = Signal(dict)       # {"event":"end"|"closed", …}：正常結束
-    failed = Signal(str)        # 協定錯誤（error 事件）或連接失敗：內容即閘道原樣返回的訊息
+    error = Signal(dict)        # {"event":"error", …}：協定錯誤原樣交回（含 broker/ktype）
+    failed = Signal(str)        # 連接失敗或無法解讀的訊息：內容即閘道原樣返回的訊息
     finished = Signal()         # 連接已結束：界面據此解鎖按鈕
 
     def __init__(self, base_url: str | None = None, api_key: str | None = None,
@@ -42,7 +44,9 @@ class StreamClient(QObject):
             )
         # http→ws 只換協定：閘道與界面同一主機同一端口，不存在另一套串流地址。
         self._url = f"{base_url.replace('http', 'ws', 1)}/stream?api_key={api_key}"
-        self._pending: dict | None = None
+        self._queue: list[dict] = []           # 未送出的訂閱：連接就緒即照順序送出
+        # 已訂閱嘅 (broker,ktype) → 尚有多少條：同一週期可並行多條，故要計數，否則其中一條結束就會誤判收齊
+        self._open: dict[tuple[str, str], int] = {}
         self._socket = QWebSocket()
         self._socket.textMessageReceived.connect(self._on_message)
         self._socket.connected.connect(self._on_connected)
@@ -52,35 +56,64 @@ class StreamClient(QObject):
     @property
     def active(self) -> bool:
         """是否仍有一条在用的連接：界面據此決定「訂閱」與「停止」哪個可用。"""
-        return self._socket.isValid() and self._socket.state() != QAbstractSocket.Unconnected
+        # 名稱必須用 UnconnectedState：這個 PySide6 唔暴露 QAbstractSocket.Unconnected（寫錯即喺已連接時先爆，
+        # 未連接時反而給 isValid() 短路掩蓋走）。
+        return self._socket.isValid() and self._socket.state() != QAbstractSocket.UnconnectedState
 
     def start(self, code: str, ktype: str, count: int, broker: str,
               autype: str | None = None) -> None:
-        """訂閱一個代碼的串流：先連上，再在連上的一刻送出訂閱，故界面不需自己排隊。
+        """訂閱一個代碼的串流（單週期頁沿用此口徑）：先連上，再在連上的一刻送出訂閱，故界面不需自己排隊。
 
         週期、根數與復權口徑一律原樣交閘道判定（不支持即返回 ktype_unsupported、被停用即返回
         broker_disabled），本層不自訂第二套預設，也不憑空補參數。
         """
         if self.active:
             return
-        self._pending = {"action": "subscribe", "codes": [code], "ktype": ktype,
-                         "count": count, "broker": broker}
-        if autype:
-            self._pending["autype"] = autype
+        self._queue = [self._subscribe(code, ktype, count, broker, autype)]
         self._socket.open(QUrl(self._url))
 
+    def subscribe(self, code: str, ktype: str, count: int, broker: str,
+                  autype: str | None = None) -> None:
+        """在同一條連接上再加一個週期的訂閱：多週期界面九個週期因此只經一條 WS（連線數由九減至一）。
+
+        未連上即照順序排隊，連上即逐個送出；已連上即即時送出。
+        """
+        action = self._subscribe(code, ktype, count, broker, autype)
+        self._queue.append(action)
+        if self._socket.state() == QAbstractSocket.ConnectedState:
+            self._socket.sendTextMessage(json.dumps(action))
+        elif not self.active:
+            self._socket.open(QUrl(self._url))
+
+    def _subscribe(self, code: str, ktype: str, count: int, broker: str,
+                   autype: str | None) -> dict:
+        action = {"action": "subscribe", "codes": [code], "ktype": ktype,
+                  "count": count, "broker": broker}
+        if autype:
+            action["autype"] = autype
+        key = (broker, ktype)
+        self._open[key] = self._open.get(key, 0) + 1
+        return action
+
+    def unsubscribe(self, broker: str, ktype: str) -> None:
+        """只停該週期（換某一格的週期時用）：閘道會停該週期在本連接上的全部串流，其餘週期各格不受影響。"""
+        if self._socket.state() == QAbstractSocket.ConnectedState:
+            self._socket.sendTextMessage(json.dumps({"action": "stop", "broker": broker, "ktype": ktype}))
+        self._open.pop((broker, ktype), None)
+
     def stop(self) -> None:
-        """結束訂閱：先送 stop 讓閘道立即停止推送並歸還名額，再關閉連接。"""
+        """結束訂閱：先送 stop 讓閘道立即停止推送，再關閉連接。"""
         if self._socket.state() == QAbstractSocket.ConnectedState:
             self._socket.sendTextMessage(json.dumps({"action": "stop"}))
-        self._pending = None
+        self._queue.clear()
+        self._open.clear()
         if self._socket.isValid():
             self._socket.close()
 
     @Slot()
     def _on_connected(self) -> None:
-        if self._pending is not None:
-            self._socket.sendTextMessage(json.dumps(self._pending))
+        for action in self._queue:
+            self._socket.sendTextMessage(json.dumps(action))
 
     @Slot(str)
     def _on_message(self, text: str) -> None:
@@ -97,8 +130,22 @@ class StreamClient(QObject):
             self.update.emit(msg)
         elif event in ("end", "closed"):
             self.closed.emit(msg)
-            self._finish()
-        else:  # error（含 stream_busy / bad_request / broker_disabled）與未知事件一律按失敗呈現
+            # 一個週期結束不等於整條連接結束：多週期時要待所有訂閱都結束先收口。同一週期可能有幾條，
+            # 故逐條扣數。消息唔帶 broker/ktype 即唔係某一條嘅結束，一律按整條連接結束處理。
+            key = (str(msg.get("broker") or ""), str(msg.get("ktype") or ""))
+            if all(key):
+                left = self._open.get(key, 0) - 1
+                if left > 0:
+                    self._open[key] = left
+                else:
+                    self._open.pop(key, None)
+            else:
+                self._open.clear()
+            if not self._open:
+                self._finish()
+        elif event == "error":   # 含 bad_request / ktype_unsupported / broker_disabled：連 broker/ktype 一併交回
+            self.error.emit(msg)
+        else:  # 未知事件一律按失敗呈現，不假裝收到
             self.failed.emit(str(msg.get("message") or msg.get("event") or "empty_event"))
 
     @Slot(QAbstractSocket.SocketError)
@@ -113,5 +160,6 @@ class StreamClient(QObject):
     def _finish(self) -> None:
         if self._socket.isValid():
             self._socket.close()
-        self._pending = None
+        self._queue.clear()
+        self._open.clear()
         self.finished.emit()

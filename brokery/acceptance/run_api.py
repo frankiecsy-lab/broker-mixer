@@ -1,7 +1,8 @@
 """驗收 `brokery_api`：把 Brokery 的統一輸出映射為 HTTP/WS 這一層本身負責的東西——自訂金鑰鑑權、
 返回信封與固定欄位契約、DataFrame→JSON（缺失值為 null、整數為整數、不出現非法的 NaN）、業務失敗仍為
 HTTP 200 且原因原樣透傳、三個清單接口的參數透傳（markets 大寫為統一前綴、broker 原樣傳入，省略即 None
-而不是把 None 傳進 core 炸開），串流協定（訂閱/更新/停止/名額），以及日誌（含金鑰遮罩）。
+而不是把 None 傳進 core 炸開），串流協定（訂閱/更新/停止，含多週期界面一條連接九個訂閱、update 自帶
+ktype、stop 帶 ktype 只停一格、同一券商同一週期可並行多條），以及日誌（含金鑰遮罩）。
 
 取數本身的對錯由 run_get_kline / run_get_accounts / run_stream_kline 等驗收，本腳本一律以 sources=()
 建立應用，串流部分以存根代替 Brokery，因此不需要任何券商連線，任何環境都能重複執行。
@@ -29,7 +30,7 @@ from starlette.websockets import WebSocketDisconnect
 
 import brokery.core as core
 from brokery import chart, prefs, store
-from brokery.brokers.base import (ACCOUNT_COLUMNS, BAR_MINUTES, BROKER_COLUMNS, COLUMNS, K_COLUMNS,
+from brokery.brokers.base import (ACCOUNT_COLUMNS, BROKER_COLUMNS, COLUMNS, K_COLUMNS, KTYPE_ORDER,
                                   SymbolBroker)
 from brokery.codes import STOCK
 from brokery.core import CODES_META_COLUMNS, PREF_COLUMNS, codes_max_age_seconds
@@ -64,13 +65,30 @@ class StubQuote:
 
 
 class HoldQuote(StubQuote):
-    """要指示才收尾的串流存根，用來驗證同一券商同時只容許一條串流。"""
+    """要指示才收尾的串流存根：一份請求一條串流，故可用來驗證同一條連接上同時並行多條。"""
 
     def __init__(self) -> None:
         self.gate = threading.Event()
 
     def stream_kline(self, codes, **kwargs):
         self.gate.wait(10)
+        return {"status": True, "data": pd.DataFrame(), "message": "ok: 存根串流結束"}
+
+
+class HoldPushQuote(HoldQuote):
+    """邊等指示收尾邊按節拍推送：用來證明「接手」換的只是收事件的佇列——新連接接手後照樣收到其後的推送，
+    而不是重新向券商訂閱一次。calls 記向券商訂閱了幾次：多條連接共用一條串流時必須只為 1。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def stream_kline(self, codes, **kwargs):
+        self.calls += 1
+        rows = [{name: SAMPLE[name] for name in K_COLUMNS}]
+        while not self.gate.wait(0.2):
+            for code in codes:
+                kwargs["on_update"](code, rows)
         return {"status": True, "data": pd.DataFrame(), "message": "ok: 存根串流結束"}
 
 
@@ -222,8 +240,8 @@ def main() -> dict:
               caps["data"]["columns"]["codes"] == list(COLUMNS), caps["data"]["columns"]["codes"])
         check("/capabilities 欄位契約與 BROKER_COLUMNS 一致",
               caps["data"]["columns"]["brokers"] == list(BROKER_COLUMNS), caps["data"]["columns"].get("brokers"))
-        check("/capabilities 週期清單為 BAR_MINUTES",
-              caps["data"]["ktypes"] == sorted(BAR_MINUTES), ",".join(caps["data"]["ktypes"]))
+        check("/capabilities 週期清單為 BAR_MINUTES，且按由短至長返回（界面照單羅列）",
+              caps["data"]["ktypes"] == list(KTYPE_ORDER), ",".join(caps["data"]["ktypes"]))
 
         codes = client.get("/codes", headers=HEADERS).json()
         check("/codes 離線讀回 CODES", codes["status"] and codes["data"]["columns"] == list(COLUMNS)
@@ -396,7 +414,7 @@ def main() -> dict:
     check("JSON 文本不含非法的 NaN", "NaN" not in text and json.loads(text)["data"]["rows"][0][2] is None,
           text[:80])
 
-    # ---------- 串流（WebSocket）：鑑權、協定、事件形状與每券商名額 ----------
+    # ---------- 串流（WebSocket）：鑑權、協定、事件形状與按請求簽名登記的串流 ----------
     stream_app = create_app(sources=(), api_key=KEY)
     with TestClient(stream_app) as client:
         try:
@@ -414,9 +432,14 @@ def main() -> dict:
             check("WS 訂閱回報 subscribed", sub["event"] == "subscribed" and sub["codes"] == ["HK.00700"], str(sub)[:120])
             fail = events.until("message", "unknown_source:")
             check("WS 業務失敗以 error 事件原樣透傳", fail.get("event") == "error", str(fail)[:120])
-            ws.send_json({"action": "subscribe", "codes": ["HK.00700"], "ktype": "1m", "broker": "futu"})
+            # 重送同一份請求（簽名完全相同）：已失敗的串流必須即時讓位，另起一條並真的再向券商取數一次；
+            # 若只是接手那條已結束的舊串流，就不會再有第二條 unknown_source。
+            ws.send_json({"action": "subscribe", "codes": ["HK.00700"], "ktype": "1m", "count": 3,
+                          "broker": "futu"})
             again = events.next()
-            check("失敗後即時歸還該券商名額", again["event"] == "subscribed", str(again)[:120])
+            retried = events.until("message", "unknown_source:")
+            check("失敗後即時歸還該份請求：重送同一份即另起一條，不接手已失敗的舊串流",
+                  again["event"] == "subscribed" and retried.get("event") == "error", str(again)[:120])
             ws.send_json({"action": "subscribe", "codes": ["HK.00700"], "ktype": "1m", "broker": "ib", "count": "abc"})
             bad = events.until("message", "bad_request:")
             check("WS 參數不合法明確報錯", bad.get("event") == "error"
@@ -442,17 +465,18 @@ def main() -> dict:
                   and len(pushed) == 1 and pushed["ts"].iloc[0] == SAMPLE["ts"], f"{len(pushed)} 行")
             ws.send_json({"action": "stop"})
             closed = events.until("event", "closed")
-            check("WS stop 回報 closed 並說明名額", closed["event"] == "closed" and "release_in" in closed,
+            check("WS stop 回報 closed 並說明該份請求還餘幾秒才收尾", closed["event"] == "closed"
+                  and "release_in" in closed,
                   str(closed)[:120])
 
-        # 用一段之前沒用過的券商名：名額是按券商登記、且要待執行緒結束才釋放，沿用別家會令這裡
-        # 收到 stream_busy 而不是 update，失敗時便看不出是 raw 欄位的問題還是名額的問題。
+        # 用一段之前沒用過的券商名：串流按請求簽名登記、且要待執行緒結束才釋放，沿用別家會令這裡加入別家
+        # 那條串流而不是自己取數，失敗時便看不出是 raw 欄位的問題還是簽名撞了。
         with client.websocket_connect(f"/stream?api_key={KEY}") as ws:
             events = WsEvents(ws)
             ws.send_json({"action": "subscribe", "codes": ["HK.00700"], "ktype": "1m", "count": 3,
                           "broker": "stubraw", "raw": True})
             sub = events.next()
-            check("raw 訂閱先回報 subscribed（名額未被前面的連接佔用）", sub["event"] == "subscribed",
+            check("raw 訂閱先回報 subscribed（前面的連接沒有佔用同一份請求）", sub["event"] == "subscribed",
                   str(sub)[:120])
             raw_update = events.until("event", "update")
             check("WS raw=True 時 update 的欄位即原生欄位",
@@ -460,17 +484,195 @@ def main() -> dict:
                   and (raw_update.get("data") or {}).get("columns") == list(NATIVE_BAR),
                   str(raw_update)[:160])
 
+        # 多週期界面（3×3 一格一週期）只用一條 WS 的依據：一份請求一條串流，按請求簽名（券商、週期、代碼、
+        # 根數、復權、raw）登記，故同一條連接可同時訂閱多個週期，同一週期要幾條都得；參數不同即另起一條，
+        # 界面永遠睇到自己要求嘅根數。
         hold = HoldQuote()
         stream_app.state.brokery = hold
         with client.websocket_connect(f"/stream?api_key={KEY}") as ws:
             events = WsEvents(ws)
-            ws.send_json({"action": "subscribe", "codes": ["HK.00700"], "ktype": "1m", "broker": "tiger"})
-            events.next()  # subscribed：名額於此刻已登記，故第二條必定被拒
-            ws.send_json({"action": "subscribe", "codes": ["HK.00700"], "ktype": "1m", "broker": "tiger"})
-            busy = events.next()
-            check("同一券商同時只容許一條串流", busy["event"] == "error"
-                  and str(busy["message"]).startswith("stream_busy:"), str(busy)[:140])
+            for ktype in ("1m", "5m", "60m"):
+                ws.send_json({"action": "subscribe", "codes": ["HK.00700"], "ktype": ktype,
+                              "count": 3, "broker": "tiger"})
+                got = events.next()
+                check(f"同一條 WS 同時訂閱多個週期（tiger/{ktype}）",
+                      got["event"] == "subscribed" and got.get("ktype") == ktype, str(got)[:120])
+            ws.send_json({"action": "subscribe", "codes": ["HK.00700"], "ktype": "1m", "count": 3,
+                          "broker": "tiger"})
+            again = events.next()
+            check("同一條連接重送同一份請求即加入現有串流（冪等，不另起名額、不另開一條）",
+                  again["event"] == "subscribed" and not again.get("resumed")
+                  and not again.get("shared"), str(again)[:140])
+            ws.send_json({"action": "subscribe", "codes": ["HK.00700"], "ktype": "1m", "count": 9,
+                          "broker": "tiger"})
+            second = events.next()
+            # 接手/共用先至會帶 resumed、shared 兩個欄位：冇即係另起了一條新的串流，而不是掛落 3 根嗰條。
+            check("同一（券商, 週期）換了根數即另起一條並行（不靜靜沿用另一組參數，也不再被拒）",
+                  second["event"] == "subscribed" and second.get("ktype") == "1m"
+                  and "resumed" not in second and "shared" not in second, str(second)[:140])
+            ws.send_json({"action": "stop", "broker": "tiger", "ktype": "5m"})
+            only = events.next()
+            check("stop 帶 ktype 時只停該週期", only["event"] == "closed" and only.get("ktype") == "5m",
+                  str(only)[:140])
+            ws.send_json({"action": "stop", "broker": "tiger"})
+            rest = [events.next(), events.next(), events.next()]
+            check("未指定的週期不受影響，其後按 broker 全部停止（同一週期有幾條即逐條停）",
+                  all(e["event"] == "closed" for e in rest)
+                  and sorted(str(e.get("ktype")) for e in rest) == ["1m", "1m", "60m"],
+                  "；".join(str(e)[:80] for e in rest))
             hold.gate.set()
+
+        # 多週期界面（3×3 九格）的實際形態：一條連接九個訂閱，每份 update 自帶自己嘅 ktype，界面靠呢個欄位
+        # 分派到對應嘅格；換走一格嘅週期時 stop 只帶嗰個 ktype，其餘八格必須照收推送。
+        # 券商名照樣用一段之前沒用過的：串流按請求簽名登記，沿用別家會撞同一份請求，失敗時睇唔出原因。
+        grid = HoldPushQuote()
+        stream_app.state.brokery = grid
+        with client.websocket_connect(f"/stream?api_key={KEY}") as ws:
+            events = WsEvents(ws)
+            for ktype in KTYPE_ORDER:
+                ws.send_json({"action": "subscribe", "codes": ["HK.00700"], "ktype": ktype,
+                              "count": 3, "broker": "stubgrid", "seconds": 60})
+                got = events.next()
+                check(f"一條 WS 同時訂閱九個週期（stubgrid/{ktype}）",
+                      got["event"] == "subscribed" and got.get("ktype") == ktype, str(got)[:120])
+            frames, seen = [], set()
+            for _ in range(120):
+                frame = events.next(5.0)
+                if frame.get("event") != "update":
+                    break
+                frames.append(frame)
+                seen.add(str(frame.get("ktype")))
+                if seen == set(KTYPE_ORDER):
+                    break
+            check("九個週期的推送各自帶自己嘅 ktype，界面按呢個欄位分派到對應嘅格",
+                  seen == set(KTYPE_ORDER) and all(f.get("ktype") in KTYPE_ORDER for f in frames),
+                  f"{len(frames)} 份 update，見齊 {sorted(seen)}")
+            ws.send_json({"action": "stop", "broker": "stubgrid", "ktype": "30m"})
+            closed, others = [], []
+            for _ in range(60):
+                frame = events.next(5.0)
+                if frame.get("event") == "closed":
+                    closed.append(str(frame.get("ktype")))
+                elif frame.get("event") == "update":
+                    others.append(str(frame.get("ktype")))
+                if closed and others:
+                    break
+            check("一格換走該週期：stop 只帶嗰個 ktype，其餘各格照收推送",
+                  closed == ["30m"] and others and "30m" not in others,
+                  f"closed={closed}｜update={sorted(set(others))}")
+            ws.send_json({"action": "stop", "broker": "stubgrid"})
+            rest = []
+            for _ in range(40):
+                frame = events.next(5.0)
+                if frame.get("event") == "closed":
+                    rest.append(str(frame.get("ktype")))
+                if len(rest) == len(KTYPE_ORDER) - 1:
+                    break
+            check("一個「停止」收齊剩低嘅八格（逐格只有週期按鈕，沒有逐格停止）",
+                  sorted(rest) == sorted(set(KTYPE_ORDER) - {"30m"}), ",".join(sorted(rest)))
+            grid.gate.set()
+
+        # 用戶真正要的形態：同一券商同一週期同時開幾格，只係代碼不同（例如兩格都 1m，一格 00700 一格
+        # 00005）。簽名不同即各自一條串流、各自向券商訂閱一次，兩格各收自己嗰個代碼嘅推送，誰也不覆蓋誰。
+        multi = HoldPushQuote()
+        stream_app.state.brokery = multi
+        with client.websocket_connect(f"/stream?api_key={KEY}") as ws:
+            events = WsEvents(ws)
+            for code in ("HK.00700", "HK.00005"):
+                ws.send_json({"action": "subscribe", "codes": [code], "ktype": "1m", "count": 3,
+                              "broker": "stubmulti", "seconds": 60})
+                got = events.until("event", "subscribed", limit=20)
+                check(f"同一券商同一週期可並行多條（stubmulti/1m {code}）",
+                      got["event"] == "subscribed" and got.get("codes") == [code]
+                      and "resumed" not in got and "shared" not in got, str(got)[:140])
+            seen = set()
+            for _ in range(120):
+                frame = events.next(5.0)
+                if frame.get("event") != "update":
+                    break
+                seen.add(str(frame.get("code")))
+                if seen == {"HK.00700", "HK.00005"}:
+                    break
+            check("兩條同週期的串流各自向券商訂閱一次，並各自推送自己嘅代碼",
+                  seen == {"HK.00700", "HK.00005"} and multi.calls == 2,
+                  f"收到代碼={sorted(seen)}｜向券商訂閱次數={multi.calls}")
+            ws.send_json({"action": "stop", "broker": "stubmulti", "ktype": "1m"})
+            stopped = []
+            for _ in range(40):
+                frame = events.next(5.0)
+                if frame.get("event") == "closed":
+                    stopped.append(str(frame.get("ktype")))
+                if len(stopped) == 2:
+                    break
+            check("同一週期有幾條即一併停（stop 只帶 ktype，逐條回報 closed）",
+                  stopped == ["1m", "1m"], ",".join(stopped))
+            multi.gate.set()
+
+        # 「停止」之後再「訂閱」同一份請求：該執行緒其實仍在跑（存根未收尾），該份請求本來就未釋放。用戶要的
+        # 是繼續收，而不是重新向券商訂閱一次並錯過它已推過的 bar，故閘道接手仍在推送嘅串流（resumed）。
+        pusher = HoldPushQuote()
+        stream_app.state.brokery = pusher
+        same = {"codes": ["HK.00700"], "ktype": "1m", "count": 3, "broker": "stubtake", "seconds": 60}
+        with client.websocket_connect(f"/stream?api_key={KEY}") as ws:
+            events = WsEvents(ws)
+            ws.send_json({"action": "subscribe", **same})
+            first = events.until("event", "subscribed")
+            check("接手前的訂閱照常 subscribed", first["event"] == "subscribed", str(first)[:120])
+            ws.send_json({"action": "stop", "broker": "stubtake", "ktype": "1m"})
+            stopped = events.until("event", "closed")
+            check("停止後仍說明該份請求尚餘幾秒才收尾（該執行緒未收尾）", stopped["event"] == "closed"
+                  and int(stopped.get("release_in") or 0) > 0, str(stopped)[:120])
+        with client.websocket_connect(f"/stream?api_key={KEY}") as ws:
+            events = WsEvents(ws)
+            ws.send_json({"action": "subscribe", **same})
+            resumed = events.until("event", "subscribed")
+            check("同一份請求在新連接上被接手：不另向券商訂閱一次，也不另起一條",
+                  resumed["event"] == "subscribed" and resumed.get("resumed") is True
+                  and int(resumed.get("seconds") or 0) > 0 and pusher.calls == 1,
+                  f"{str(resumed)[:120]}｜向券商訂閱次數={pusher.calls}")
+            live = events.until("event", "update")
+            check("接手後即刻收到仍在推送的 bar", live["event"] == "update"
+                  and live.get("code") == "HK.00700", str(live)[:120])
+            ws.send_json({"action": "subscribe", **dict(same, count=5)})
+            # 其間仍每 0.2 秒收到接手中的 update，故按事件類型取；接手不帶 resumed/shared 以外嘅分別，
+            # 另起一條才完全冇呢兩個欄位。
+            added = events.until("event", "subscribed", limit=20)
+            again = events.until("event", "update", limit=20)
+            check("換了根數即另起一條並行：不靜靜沿用另一組參數、也不再被拒，並另向券商訂閱一次",
+                  added["event"] == "subscribed" and "resumed" not in added
+                  and "shared" not in added and again["event"] == "update" and pusher.calls == 2,
+                  f"{str(added)[:100]}｜向券商訂閱次數={pusher.calls}")
+            pusher.gate.set()
+
+        # 多個界面同時收同一份串流（用戶實測：桌面 GUI 已開 1m，Web UI 即被拒「名額尚未釋放，約 166 秒後
+        # 自動訂閱…」）。同一份請求在第二條連接上即加入同一條串流：向券商只訂閱一次，兩邊各收到同一份
+        # update；其中一方停止或斷線也不影響另一方，最後一方退出才結束該串流。
+        shared = HoldPushQuote()
+        stream_app.state.brokery = shared
+        want = {"codes": ["HK.00700"], "ktype": "1m", "count": 3, "broker": "stubshare", "seconds": 60}
+        with client.websocket_connect(f"/stream?api_key={KEY}") as ws_a, \
+                client.websocket_connect(f"/stream?api_key={KEY}") as ws_b:
+            ea, eb = WsEvents(ws_a), WsEvents(ws_b)
+            ws_a.send_json({"action": "subscribe", **want})
+            opened = ea.until("event", "subscribed")
+            check("第一條連接照常新建串流（不是接手，也不是共用）",
+                  opened["event"] == "subscribed" and not opened.get("resumed")
+                  and not opened.get("shared"), str(opened)[:140])
+            ws_b.send_json({"action": "subscribe", **want})
+            joined = eb.until("event", "subscribed")
+            check("第二條連接同一份請求即加入現有串流：不另起一條，並說明是共用（shared）",
+                  joined["event"] == "subscribed" and joined.get("shared") is True
+                  and not joined.get("resumed"), str(joined)[:140])
+            both = [ea.until("event", "update"), eb.until("event", "update")]
+            check("兩條連接都收到同一份 update，而向券商只訂閱了一次",
+                  all(e["event"] == "update" and e.get("code") == "HK.00700" for e in both)
+                  and shared.calls == 1, f"訂閱次數={shared.calls}")
+            ws_a.send_json({"action": "stop", "broker": "stubshare", "ktype": "1m"})
+            gone, kept = ea.until("event", "closed"), eb.until("event", "update")
+            check("一方停止只退出自己：另一條連接照收，串流既不被停掉也不另起一次訂閱",
+                  gone["event"] == "closed" and kept["event"] == "update" and shared.calls == 1,
+                  f"{str(gone)[:80]}｜另一條收到={kept.get('event')}｜訂閱次數={shared.calls}")
+            shared.gate.set()
 
     # ---------- 券商開關喜好（BROKER 管理）：啟動讀檔注入、寫檔只在 core 成功之後、被停用者不經過它 ----------
     # 兩個存根券商代替真實適配器（不連線）；喜好檔指到臨時目錄，不觸及用戶實際的 broker_prefs.json。
@@ -525,6 +727,9 @@ def main() -> dict:
                   kept["status"] and len(kept["data"]["rows"]) == 1
                   and STUB_CALLS["stubone"] == ["get_kline"] and STUB_CALLS["stubtwo"] == [],
                   f"{kept['message']} {dict(STUB_CALLS)}")
+            # 實際根數少於請求即點名：呢句由 core 產生、閘道原樣透傳，界面先見到「邊家嘅邊個週期只得幾多根」。
+            check("實際深度不足請求根數時 message 點名該來源該週期的深度（閘道原樣透傳，不改寫不吞走）",
+                  "stubone 的 1m 深度只有 1 根（請求 3 根）" in kept["message"], kept["message"])
 
             upper = client.get("/brokers/prefs/update", params={"enabled": "STUBTWO"},
                                headers=HEADERS).json()

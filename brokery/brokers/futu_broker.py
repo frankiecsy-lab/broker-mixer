@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import date, timedelta
+import threading
 
 import futu
 
@@ -68,6 +69,11 @@ FUTU_KTYPE = {
 # not valid. (None,qfq,hfq)」，傳 Python None 或 "none" 同樣被拒），故不經 AuType 枚舉而直接傳值。
 FUTU_AUTYPE = {"qfq": "qfq", "hfq": "hfq", "none": "None"}
 FUTU_PAGE_MAX = 1000  # get_cur_kline 單次上限；此版本無分頁參數，更多 bar 需改用 request_history_kline
+# get_cur_kline 的實際返回遠少於其 num（實測傳 1000 時 5m/30m/60m/day/week/month 只回 60 根，只有
+# 1m/15m 給足），故 bar 數不能只靠該接口，不足時要補 request_history_kline。
+# 歷史請求的起日折半重試下限：起日過早會被上游拒（實測週線要 57 年、月線要 85 年跨度即回報
+# 「F3CNN返回錯誤，可能是參數錯誤或者斷線」），一年跨度足以容納各週期實際可取的深度。
+HISTORY_MIN_SPAN_DAYS = 365
 
 # get_acc_list 的 acc_type → 統一詞表（實測該欄為 CASH/MARGIN，與 trd_env 各自獨立）。
 ACC_OF_ACC_TYPE = {"CASH": ACC_CASH, "MARGIN": ACC_MARGIN}
@@ -124,18 +130,35 @@ class FutuBroker(SymbolBroker):
         self.host = host or settings.futu_host
         self.port = port or settings.futu_port
         self._ctx = None
+        # 一條富途連線只容許一個推送回呼（set_handler），故各週期的串流共用一個路由，按推送的
+        # k_type 分派。同一週期可並行多份串流（推送本身帶代碼，各 sink 只收自己那份），但上游的
+        # 訂閱是按（代碼, 週期）計的：任何一份串流結束都會退掉該訂閱，蓋走仍在收嘅別份。故訂閱以
+        # 引用計數，最後一份才退。start()/stop() 同樣以引用計數，最後一份串流結束才停推送。
+        self._router = None
+        self._subs: dict[tuple[str, str], int] = {}   # (代碼, ktype) → 仍有幾份串流需要該訂閱
+        self._streams = 0
+        self._stream_lock = threading.Lock()
+        # 多個週期的串流會同時首次取數：只以「_ctx 唔係 None 即返回」防重的話，幾個執行緒會各建
+        # 一個 OpenQuoteContext（實測同一毫秒出現三個），多餘嘅連線既用唔到亦永遠唔會關。
+        self._conn_lock = threading.Lock()
 
     def connect(self) -> None:
-        if self._ctx is not None:
-            return
-        # 此 SDK 版本的 SysConfig 不收 timeout，get_stock_basicinfo 亦無 timeout 參數，故網絡層
-        # 無法定時；每個（市場, 類型）只發一次請求，無無界迴圈。
-        self._ctx = futu.OpenQuoteContext(host=self.host, port=self.port)
+        with self._conn_lock:
+            if self._ctx is not None:
+                return
+            # 此 SDK 版本的 SysConfig 不收 timeout，get_stock_basicinfo 亦無 timeout 參數，故網絡層
+            # 無法定時；每個（市場, 類型）只發一次請求，無無界迴圈。
+            self._ctx = futu.OpenQuoteContext(host=self.host, port=self.port)
 
     def close(self) -> None:
-        if self._ctx is not None:
-            self._ctx.close()
-            self._ctx = None
+        with self._conn_lock:
+            if self._ctx is not None:
+                self._ctx.close()
+                self._ctx = None
+                # 連線已關：路由與訂閱計數屬連線狀態，一併清走，下次 connect() 重新裝回。
+                self._router = None
+                self._subs.clear()
+                self._streams = 0
 
     # ---------- 清單 ----------
 
@@ -160,9 +183,10 @@ class FutuBroker(SymbolBroker):
     def get_kline(self, code: str, ktype: str, count: int, autype: str, *, raw: bool = False) -> list[dict]:
         """按 bar 數取 K 線，返回按 ts 升序的最近 count 根。
 
-        ≤1000 根用 get_cur_kline（富途原生的 bar 數接口，需先訂閱同類型 K 線）；此版本的
-        get_cur_kline 無分頁參數，故更多時改用 request_history_kline，按日期範圍多取再分頁，
-        最後截尾。bar 時間為交易所當地時間，統一換算成 UTC 秒以便與其它券商對齊。
+        取數分兩步：先用 get_cur_kline（富途原生的 bar 數接口，需先訂閱同類型 K 線，快但對多數
+        週期只給最近幾十根），不足即以 request_history_kline 按日期範圍多取再分頁，兩者去重合併後
+        截尾。因此各週期的根數只受該標的實際可取深度限制，不再受取數路徑影響。bar 時間為交易所
+        當地時間，統一換算成 UTC 秒以便與其它券商對齊。
         raw=True 時列為 get_cur_kline/request_history_kline 的原生欄位，排序與截尾改按原生
         time_key（同一格式的時間文字，升序即時間升序），取數範圍不變。
         """
@@ -173,10 +197,12 @@ class FutuBroker(SymbolBroker):
         market = parse_code(code).market
         self.connect()
 
+        rows: list[dict] = []
         if count <= FUTU_PAGE_MAX:
             rows = self._kline_recent(code, market, ktype, count, autype, raw=raw)
-        else:
-            rows = self._kline_history(code, market, ktype, count, autype, raw=raw)
+        if len(rows) < count:
+            rows = self._merge_kline(rows, self._kline_history(code, market, ktype, count, autype, raw=raw),
+                                     raw=raw)
         rows.sort(key=lambda row: str(row.get("time_key", "")) if raw else row["ts"])
         return rows[-count:]
 
@@ -192,7 +218,18 @@ class FutuBroker(SymbolBroker):
 
     def _kline_history(self, code: str, market: str, ktype: str, count: int, autype: str,
                        raw: bool = False) -> list[dict]:
-        start = date.today() - timedelta(days=span_days(ktype, count))
+        """按 bar 數推算日期範圍取歷史；起日過早被上游拒時把跨度折半重試，至下限為止。"""
+        span = span_days(ktype, count)
+        while True:
+            try:
+                return self._kline_pages(code, market, ktype, date.today() - timedelta(days=span), autype, raw=raw)
+            except RuntimeError:
+                if span <= HISTORY_MIN_SPAN_DAYS:
+                    raise
+                span = max(span // 2, HISTORY_MIN_SPAN_DAYS)
+
+    def _kline_pages(self, code: str, market: str, ktype: str, start: date, autype: str,
+                     raw: bool = False) -> list[dict]:
         rows: list[dict] = []
         page = None
         while True:
@@ -213,6 +250,15 @@ class FutuBroker(SymbolBroker):
             if not page:
                 break
         return rows
+
+    @staticmethod
+    def _merge_kline(newer: list[dict], older: list[dict], *, raw: bool = False) -> list[dict]:
+        """按時間鍵去重合併兩段 K 線；同一根以第一段為準（其價格為最新狀態）。"""
+        def key(row: dict) -> str:
+            return str(row.get("time_key", "")) if raw else str(row["ts"])
+        merged = {key(row): row for row in older}
+        merged.update({key(row): row for row in newer})
+        return list(merged.values())
 
     def _kline_rows(self, code: str, market: str, ktype: str, df, raw: bool = False) -> list[dict]:
         if raw:
@@ -253,6 +299,10 @@ class FutuBroker(SymbolBroker):
         最新一根（未走完的 bar 亦會持續推送），有變化才呼叫 on_update(code, rows)。回調在 SDK 的
         推送執行緒中發生。seconds 為持續秒數，0 表示直到 Ctrl-C。
         raw=True 時起點與推送一律為富途原生欄位，按原生 time_key 合併（見 NativeBars）。
+
+        不同 ktype 可同時串流（推送回呼按 k_type 分派，見 _KlinePushRouter），同一 ktype 亦可並行多份：
+        推送自帶 k_type 與代碼，各 sink 只收自己那份；上游訂閱按（代碼, 週期）引用計數，最後一份結束才
+        退，故並行時不會互相蓋走。
         """
         if ktype not in FUTU_KTYPE:
             raise CodeError(f"ktype_unsupported: {ktype}（可用：{'/'.join(FUTU_KTYPE)}）")
@@ -260,21 +310,58 @@ class FutuBroker(SymbolBroker):
             raise CodeError(f"autype_unsupported: {autype}（可用：{'/'.join(FUTU_AUTYPE)}）")
         self.connect()
 
-        markets = {code: parse_code(code).market for code in codes}
-        mergers: dict[str, BarMerger] = {}
-        for code in codes:
-            seed = self._kline_recent(code, markets[code], ktype, min(count, FUTU_PAGE_MAX), autype, raw=raw)
-            merger = NativeBars(count, "time_key") if raw else BarMerger(count)
-            merger.merge(seed)
-            mergers[code] = merger
+        # 先計本次的（代碼, 週期）再取起點：取起點期間別份串流若結束，也不會退掉本次仍需要嘅訂閱。
+        # 同一代碼在本次串流內只計一次。
+        held = tuple(dict.fromkeys(codes))
+        with self._stream_lock:
+            for code in held:
+                self._subs[(code, ktype)] = self._subs.get((code, ktype), 0) + 1
 
-        self._ctx.set_handler(_KlinePushHandler(self, ktype, markets, mergers, on_update, raw=raw))
-        self._ctx.start()  # 對稱於結束時的 stop()；此 SDK 連線後預設已在接收推送
+        sink, registered = None, False
         try:
+            markets = {code: parse_code(code).market for code in codes}
+            mergers: dict[str, BarMerger] = {}
+            for code in codes:
+                seed = self._kline_recent(code, markets[code], ktype, min(count, FUTU_PAGE_MAX), autype, raw=raw)
+                merger = NativeBars(count, "time_key") if raw else BarMerger(count)
+                merger.merge(seed)
+                mergers[code] = merger
+
+            sink = _KlineSink(self, ktype, markets, mergers, on_update, raw=raw)
+            with self._stream_lock:
+                self._streams += 1
+                registered = True
+                first = self._streams == 1
+                if self._router is None:
+                    # 回呼每條連線只有一個，故只裝一次：由路由按 k_type 分派俾各週期的串流。
+                    self._router = _KlinePushRouter()
+                    self._ctx.set_handler(self._router)
+                self._router.add(sink)
+            if first:
+                # 對稱於最後一份串流結束時的 stop()；此 SDK 連線後預設已在接收推送。
+                self._ctx.start()
             stream_wait(seconds)
         finally:
-            self._ctx.stop()
-            self._ctx.unsubscribe(list(codes), [getattr(futu.SubType, FUTU_KTYPE[ktype])])
+            if sink is not None and self._router is not None:
+                self._router.remove(sink)
+            with self._stream_lock:
+                if registered:
+                    self._streams -= 1
+                last = registered and self._streams == 0
+                stale: list[str] = []
+                for code in held:
+                    left = self._subs.get((code, ktype), 0) - 1
+                    if left > 0:
+                        self._subs[(code, ktype)] = left
+                    else:
+                        self._subs.pop((code, ktype), None)
+                        stale.append(code)
+            # 只退已無人需要的（代碼, 週期）：同一（代碼, 週期）可被多份串流共用，仍有別份在收即不退；
+            # 同一代碼的其他週期各有自己的訂閱，互不相干。
+            if stale:
+                self._ctx.unsubscribe(stale, [getattr(futu.SubType, FUTU_KTYPE[ktype])])
+            if last:
+                self._ctx.stop()
         return {code: mergers[code].frame() for code in codes}
 
     # ---------- 戶口 ----------
@@ -389,45 +476,73 @@ class FutuBroker(SymbolBroker):
         )
 
 
-class _KlinePushHandler(futu.CurKlineHandlerBase):
-    """把富途推送的 K 線轉成統一列並交回各代碼的合併器。
+class _KlineSink:
+    """一個週期的串流狀態：各代碼的合併器，以及把該週期的推送交回合併器。
 
-    回調在 SDK 的獨立執行緒中執行。同一連線亦可能收到其他 ktype 的推送（get_kline 同樣會訂閱），
-    故只處理本次串流所訂閱的 k_type；推送未帶代碼或代碼不在本次串流範圍時一併忽略。
+    回調在 SDK 的獨立執行緒中執行。推送的 DataFrame 會包含這條連線已訂閱的所有週期，故只處理
+    k_type 屬於本週期的行；推送未帶代碼或代碼不在本次串流範圍時一併忽略。
     raw=True 時不做任何轉換，各代碼的合併器為 NativeBars（按原生 time_key 合併）。
     """
 
-    def __init__(self, broker: FutuBroker, ktype: str, markets: dict, mergers: dict, on_update,
+    def __init__(self, broker: "FutuBroker", ktype: str, markets: dict, mergers: dict, on_update,
                  raw: bool = False):
-        super().__init__()  # SDK 的 RspHandlerBase.__del__ 依賴其 __init__ 建立的屬性
+        self.push_type = FUTU_KTYPE[ktype]  # 推送帶 k_type 欄，路由按此分派
         self._broker = broker
         self._ktype = ktype  # 統一 ktype，供 _to_kline_row 的週期對齊使用
-        self._push_type = FUTU_KTYPE[ktype]  # 推送帶 k_type 欄，需按此過濾（同一連線可能有多種 ktype）
         self._markets = markets
         self._mergers = mergers
         self._on_update = on_update
         self._raw = raw
 
-    def on_recv_rsp(self, rsp_pb):
-        ret, df = super().on_recv_rsp(rsp_pb)
-        if ret != futu.RET_OK:
-            return ret, df
+    def feed(self, df) -> None:
         if self._raw:
             grouped: dict[str, list[dict]] = {}
             for row in df.to_dict("records"):
-                if row.get("k_type") == self._push_type and row.get("code") in self._mergers:
+                if row.get("k_type") == self.push_type and row.get("code") in self._mergers:
                     grouped.setdefault(str(row["code"]), []).append(row)
             for code, rows in grouped.items():
                 if self._mergers[code].merge(rows) and self._on_update is not None:
                     self._on_update(code, self._mergers[code].frame())
-            return futu.RET_OK, None
+            return
         for item in df.itertuples():
             merger = self._mergers.get(item.code)
-            if merger is None or item.k_type != self._push_type:
+            if merger is None or item.k_type != self.push_type:
                 continue
             row = self._broker._to_kline_row(
                 item.code, self._markets[item.code], self._ktype, item
             )
             if merger.merge([row]) and self._on_update is not None:
                 self._on_update(item.code, merger.frame())
+
+
+class _KlinePushRouter(futu.CurKlineHandlerBase):
+    """一條富途連線只容許一個推送回呼，故由本路由按推送的 k_type 分派俾各週期的串流。
+
+    呢度係多個週期能共用同一條連線同時串流嘅前提：各週期各自訂閱自己的 subtype，而推送返回嘅
+    DataFrame 一併包含所有已訂閱的週期，故分派以行上的 k_type 為準（見 _KlineSink.feed）。
+    同一週期的多份串流各有一份 sink：feed 只處理代碼屬於自己那份嘅行，故兩份不會互收對方的 bar。
+    """
+
+    def __init__(self):
+        super().__init__()  # SDK 的 RspHandlerBase.__del__ 依賴其 __init__ 建立的屬性
+        self._sinks: list[_KlineSink] = []
+        self._lock = threading.Lock()
+
+    def add(self, sink: _KlineSink) -> None:
+        with self._lock:
+            self._sinks.append(sink)
+
+    def remove(self, sink: _KlineSink) -> None:
+        with self._lock:
+            if sink in self._sinks:
+                self._sinks.remove(sink)
+
+    def on_recv_rsp(self, rsp_pb):
+        ret, df = super().on_recv_rsp(rsp_pb)
+        if ret != futu.RET_OK:
+            return ret, df
+        with self._lock:
+            sinks = list(self._sinks)
+        for sink in sinks:
+            sink.feed(df)
         return futu.RET_OK, None

@@ -382,6 +382,8 @@ class Brokery:
         """取 K 線，統一以富途格式輸出（欄位固定為 brokers.base.K_COLUMNS）。
 
         count 為 bar 數（富途語義），IB 由 bar 數反推時間跨度後再截尾；broker 選擇來源。
+        根數與週期無關：各來源一律取盡自己在該週期可取的深度，不足請求數時 status 仍為 True，但
+        message 會點名該來源的實際深度，不會靜靜少返。
         autype 省略時用構造函數的預設值；各券商只支援自己聲明的複權模式（見 SymbolBroker.autypes），
         要求了不支持的模式即返回 status=False，不會靜靜改用另一種價格。品種（股票／期貨／指數／期權）
         由代碼推斷，來源未聲明該品種亦返回 status=False（type_unsupported）。複權只對股票有效：期貨、
@@ -414,10 +416,12 @@ class Brokery:
             return _fail(
                 f"empty_kline: {code} 未取到任何 bar（請檢查代碼、ktype 或券商權限）", raw=raw,
             )
+        # 實際根數少於請求即點名：這是該來源在該週期的可取深度，不是取數路徑少取了。
+        short = "" if len(rows) >= count else f"，{broker} 的 {ktype} 深度只有 {len(rows)} 根（請求 {count} 根）"
         return {
             "status": True,
             "data": _native_frame(rows) if raw else pd.DataFrame(rows, columns=K_COLUMNS),
-            "message": f"ok: {len(rows)} 根 {ktype} K 線（{code}，來源 {broker}）",
+            "message": f"ok: {len(rows)} 根 {ktype} K 線（{code}，來源 {broker}）{short}",
         }
 
     def stream_kline(

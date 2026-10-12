@@ -26,7 +26,7 @@
         <number>1</number>
        </property>
        <property name="maximum">
-        <number>1000</number>
+        <number>100000</number>
        </property>
       </widget>
      </item>
@@ -68,7 +68,32 @@
     </widget>
    </item>
    <item>
+    <widget class="QWidget" name="chartBox">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch>
+       <verstretch>3</verstretch>
+      </sizepolicy>
+     </property>
+     <layout class="QVBoxLayout" name="chartLayout">
+      <item>
+       <widget class="QLabel" name="chartNoteLabel">
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
     <widget class="QTableWidget" name="klineTable">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch>
+       <verstretch>2</verstretch>
+      </sizepolicy>
+     </property>
      <property name="editTriggers">
       <set>QAbstractItemView::NoEditTriggers</set>
      </property>

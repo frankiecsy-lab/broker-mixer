@@ -31,10 +31,10 @@ from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBea
 from brokery import Brokery, CodeError, chart, prefs, store
 from brokery.brokers.base import (
     ACCOUNT_COLUMNS,
-    BAR_MINUTES,
     BROKER_COLUMNS,
     COLUMNS,
     K_COLUMNS,
+    KTYPE_ORDER,
     native_columns,
 )
 from brokery.config import get_settings
@@ -132,14 +132,29 @@ def ws_key_ok(ws: WebSocket, api_key: str) -> bool:
     return bool(supplied) and hmac.compare_digest(supplied, api_key)
 
 
+def stream_key(broker: str, ktype: str, codes: tuple[str, ...], count: int,
+               autype: str | None, raw: bool) -> tuple:
+    """一份串流請求的簽名：同簽名即同一份請求（共用或接手），簽名不同即另一條可並行的串流。
+
+    代碼先排序，故只換代碼順序仍算同一份。券商與週期是簽名的前兩項，界面按這兩項停某一格時照樣
+    可比對（見 /stream 的 stop）。
+    """
+    return (broker, ktype, tuple(sorted(codes)), int(count), autype or "", bool(raw))
+
+
 class StreamWorker:
-    """一個券商一條 K 線串流：在後台執行緒中跑 Brokery.stream_kline，事件經佇列交回連接。
+    """一份請求一條 K 線串流：在後台執行緒中跑 Brokery.stream_kline，事件經佇列交回連接。
 
     Brokery 的串流會阻塞至 seconds 結束，且推送回呼在券商自己的執行緒到達，因此這裡只跳一次線程
-    （call_soon_threadsafe），不在回呼內做任何耗時工作。同一券商只容許一條串流：富途的推送回調是按
-    連線設置（set_handler），兩條同時進行會互相覆蓋，其中一條收尾時的 stop() 更會把另一條的訂閱一併
-    退掉。名額因此要待執行緒真正結束才釋放（且先釋放才發 end/error），故 stop() 只標記結束並回報還差
-    多少秒。
+    （call_soon_threadsafe），不在回呼內做任何耗時工作。一份串流由請求簽名界定（見 stream_key）：
+    同簽名即同一份請求，向券商只訂閱一次並送給所有在收的連接；簽名不同即另一條串流，故同一券商
+    同一週期亦可並行多條（富途的推送自帶 k_type 與代碼，各份只收自己那份，見 brokers.futu_broker）。
+    名額要待執行緒真正結束才釋放（且先釋放才發 end/error），故 stop() 只標記結束並回報還差多少秒。
+    也正因為該執行緒仍在跑，同一份請求再訂閱時可接手呢條仍未走完嘅串流（見 join），唔使重新排隊。
+
+    一條串流可同時送給多條連接（見 _subs）：桌面 GUI 與 Web UI 同睇同一份 bar 時，向券商只訂閱一次，
+    兩邊各自收到同一份 update。最後一條連接退出才真正結束該串流（見 leave），否則先退出者會把別家嘅
+    串流一併停掉。
     """
 
     def __init__(self, brokery: Brokery, logger, broker: str, codes: tuple[str, ...], ktype: str,
@@ -149,7 +164,8 @@ class StreamWorker:
         self._brokery, self._logger = brokery, logger
         self.count, self.autype, self.seconds = count, autype, seconds
         self.raw = raw
-        self._loop, self._queue = loop, queue
+        # 收呢條串流嘅連接：佇列 → 該佇列所屬嘅事件循環。建立時即綁住創建它嘅連接。
+        self._subs: dict[asyncio.Queue, asyncio.AbstractEventLoop] = {queue: loop}
         self._ends_at = time.monotonic() + seconds
         self._stopping = False
         self.on_done = None  # 由建立者指派：名額要待執行緒真正結束才歸還
@@ -159,16 +175,49 @@ class StreamWorker:
         self._thread.start()
 
     def release_in(self) -> int:
-        """還剩多少秒才會真正釋放該券商的串流名額。"""
+        """還剩多少秒才會真正歸還該份請求的串流名額。"""
         return max(0, round(self._ends_at - time.monotonic()))
 
     def stop(self) -> None:
         """請求結束。執行緒無法被強制中止，故只標記；名額在 _run 結束時才釋放。"""
         self._stopping = True
 
+    @property
+    def watchers(self) -> int:
+        """而家有多少條連接在收呢條串流。"""
+        return len(self._subs)
+
+    def join(self, loop: asyncio.AbstractEventLoop, queue: asyncio.Queue) -> bool:
+        """多一條連接收呢條串流：串流本身照跑，只是多送一份事件。
+
+        回傳是否由「沒有人收」回到有（即接手呢條仍在跑的串流）：該情況下要撤銷 stop()，
+        因為用戶重新訂閱即表示要繼續收，同一條串流不需要重新向券商訂閱。
+        """
+        revived = not self._subs
+        self._subs[queue] = loop
+        if revived:
+            self._stopping = False
+        return revived
+
+    def leave(self, queue: asyncio.Queue) -> bool:
+        """一條連接不再收呢條串流（客戶端停止或連線已斷開）。
+
+        回傳是否已沒有人收：只有最後一個退出才結束該串流，先退出者不該把別家仍在看的串流停掉。
+        """
+        self._subs.pop(queue, None)
+        if not self._subs:
+            self.stop()
+            return True
+        return False
+
     def push(self, payload: dict) -> None:
-        """由任意執行緒推入事件：只經一次 call_soon_threadsafe 進入事件循環。"""
-        self._loop.call_soon_threadsafe(self._queue.put_nowait, payload)
+        """由任意執行緒推入事件：每條在收的連接各經一次 call_soon_threadsafe 進入其事件循環。
+        已請求停止即不再推送：按「停止」之後不該再收到 bar（名額仍照原時窗計算，見 stop）。
+        訂閱者由事件循環增減、本處在券商執行緒，故先取快照再送，避免邊送邊變。"""
+        if self._stopping:
+            return
+        for queue, loop in list(self._subs.items()):
+            loop.call_soon_threadsafe(queue.put_nowait, payload)
 
     def _run(self) -> None:
         try:
@@ -185,14 +234,16 @@ class StreamWorker:
             self.on_done()
         if not self._stopping:
             event = "end" if result["status"] else "error"
-            self.push({"event": event, "broker": self.broker, "message": str(result["message"])})
+            self.push({"event": event, "broker": self.broker, "ktype": self.ktype,
+                       "message": str(result["message"])})
 
     def _on_update(self, code: str, rows: list[dict]) -> None:
         """券商推送：把該代碼目前完整的 bar 交回連接，客戶端以最新一份覆蓋整張圖。
 
         回呼送來的是字典列表（各券商的 BarMerger/NativeBars 即返回此形式），不是 DataFrame。
+        一條連接可同時有多個週期的串流，故每個事件一律帶 ktype，客戶端按此分派返對應嘅圖。
         """
-        self.push({"event": "update", "broker": self.broker, "code": code,
+        self.push({"event": "update", "broker": self.broker, "ktype": self.ktype, "code": code,
                    "data": rows_payload(rows)})
 
 
@@ -376,7 +427,8 @@ def create_app(sources: tuple[str, ...] | None = None, autype: str | None = None
                     "accounts": list(ACCOUNT_COLUMNS),
                     "brokers": list(BROKER_COLUMNS),
                 },
-                "ktypes": sorted(BAR_MINUTES),
+                # 週期按由短至長返回：界面（含多週期頁的九個週期）照單羅列，唔准各處自己排
+                "ktypes": list(KTYPE_ORDER),
                 "acc_filters": list(ACC_FILTERS),
                 "adapters": {
                     name: {
@@ -517,21 +569,31 @@ def create_app(sources: tuple[str, ...] | None = None, autype: str | None = None
 
     # ---------- 串流 ----------
 
-    def release(broker: str, worker: StreamWorker) -> None:
-        """歸還該券商的串流名額：只認得自己那一個，不會誤除後來者的註冊。"""
-        if app.state.streams.get(broker) is worker:
-            app.state.streams.pop(broker, None)
+    def release(key: tuple, worker: StreamWorker) -> None:
+        """歸還該份請求的串流名額：只認得自己那一個，不會誤除同簽名後來者的註冊。"""
+        if app.state.streams.get(key) is worker:
+            app.state.streams.pop(key, None)
 
     @app.websocket("/stream")
     async def stream(ws: WebSocket) -> None:
         """K 線串流（WebSocket）。客戶端送 {"action":"subscribe","codes":[…],"ktype":…,"count":…,
-        "broker":…,"autype":…,"seconds":…,"raw":…} 開始，{"action":"stop"} 結束；服务端返回
+        "broker":…,"autype":…,"seconds":…,"raw":…} 開始，{"action":"stop","broker":…,"ktype":…} 結束
+        （省略 ktype 即停該券商在本連接上的全部串流，同一週期有幾條即一併停）；服务端返回
         {"event":"subscribed"|"update"|"closed"|"end"|"error"}。raw 為真時每次 update 的欄位即該
         券商 bar 的原生欄位（取數與推送語義不變）。
 
         歷史起點由 /kline 取，本處只推更新，每次 update 帶該代碼目前完整的 bar，客戶端整份覆蓋即可，
         不需要自己合併。ktype、autype 與代碼是否支持一律由 Brokery 判定，失敗以 error 事件原樣返回，
         這裡不重複判斷。
+
+        一條連接可同時訂閱多個週期（各週期各自一條串流執行緒），所有事件一律帶 ktype 供客戶端分派。
+        呢樣係多週期界面（例如 3×3）只用一條 WS 嘅依據：瀏覽器每來源的併發連線得約 6 條，九格各開
+        一條會排到塞住。
+
+        一份串流由請求簽名（券商、週期、代碼、根數、復權、raw）界定：同簽名即同一份請求，閘道只向
+        券商訂閱一次，每條連接各收到同一份 update，故桌面 GUI 與 Web UI 可同時睇同一張圖而唔使互相等
+        名額；其中一方停止或斷線不影響另一方，最後一方退出才結束該串流。簽名不同即另一條串流，同一
+        券商同一週期亦可並行多條（例如兩格同週期但代碼不同），不會再返回 stream_busy。
         """
         if not ws_key_ok(ws, api_key):
             await ws.close(code=4403)  # 未鑑權：不返回任何券商資料
@@ -549,16 +611,24 @@ def create_app(sources: tuple[str, ...] | None = None, autype: str | None = None
                 await ws.send_json(await queue.get())
 
         pumping = asyncio.create_task(pump())
-        current: StreamWorker | None = None
+        workers: dict[tuple, StreamWorker] = {}   # 本連接上的訂閱：請求簽名 → 串流（同一週期可有多條）
         try:
             while True:
                 action = await ws.receive_json()
                 kind = str(action.get("action", "")).lower()
                 if kind == "stop":
-                    if current is not None:
-                        current.stop()
-                        await ws.send_json({"event": "closed", "broker": current.broker,
-                                            "release_in": current.release_in()})
+                    broker = str(action.get("broker", ""))
+                    ktype = str(action.get("ktype", ""))
+                    for key, worker in list(workers.items()):
+                        if (broker and key[0] != broker) or (ktype and key[1] != ktype):
+                            continue
+                        # 先由本連接的訂閱表除名：執行緒要收尾先歸還名額（app.state.streams），但已指示
+                        # 停止的訂閱不能再被下一次 stop 重複發 closed。同一週期有幾條即逐條停、逐條發 closed。
+                        workers.pop(key, None)
+                        # 本連接不再收呢條串流：仍有別條連接在收即照跑，最後一個退出才真正結束
+                        worker.leave(queue)
+                        await ws.send_json({"event": "closed", "broker": worker.broker,
+                                            "ktype": worker.ktype, "release_in": worker.release_in()})
                     continue
                 if kind != "subscribe":
                     await ws.send_json({"event": "error", "message": f"bad_action: {kind or '空'}"})
@@ -566,14 +636,7 @@ def create_app(sources: tuple[str, ...] | None = None, autype: str | None = None
 
                 broker = str(action.get("broker", "futu"))
                 codes = tuple(action.get("codes") or ([str(action["code"])] if action.get("code") else []))
-                busy = app.state.streams.get(broker)
-                if busy is not None:
-                    await ws.send_json({
-                        "event": "error", "broker": broker,
-                        "message": f"stream_busy: {broker} 已有串流（{','.join(busy.codes)} {busy.ktype}）；"
-                                   f"同一券商只容許一條，約 {busy.release_in()} 秒後可重新訂閱",
-                    })
-                    continue
+                ktype = str(action.get("ktype", "1m"))
                 try:
                     count = int(action.get("count", 60))
                     seconds = float(action.get("seconds") or settings.api_stream_seconds)
@@ -581,25 +644,51 @@ def create_app(sources: tuple[str, ...] | None = None, autype: str | None = None
                     await ws.send_json({"event": "error", "broker": broker,
                                         "message": f"bad_request: {exc}"})
                     continue
+                autype, raw = action.get("autype"), bool(action.get("raw", False))
+                key = stream_key(broker, ktype, codes, count, autype, raw)
+
+                running = app.state.streams.get(key)
+                left = running.release_in() if running is not None else 0
+                if running is not None and left > 0:
+                    # 同一份請求已有串流在跑即加入佢：向券商只訂閱一次，每條連接各收一份 update。呢個正正
+                    # 係桌面 GUI 與 Web UI 可以同時睇同一張圖嘅依據，唔使互相等名額。
+                    # 「停止」只標記結束，該執行緒其實仍在推送（Brokery.stream_kline 要待 seconds 走完才返回），
+                    # 故一時無人收嘅串流照樣可被接手（resumed），就是用戶要嘅「繼續」；否則只會白得一段
+                    # 睇唔到最新價嘅空窗。
+                    # 簽名不同（換代碼、根數、復權或 raw）即另一份請求：唔使等佢，直接另起一條並行。
+                    revived = running.join(loop, queue)
+                    workers[key] = running
+                    logger.info("WS %s現有串流：%s %s %s（尚餘 %d 秒，%d 條連接在收）",
+                                "接手" if revived else "加入", broker, ",".join(codes), ktype,
+                                left, running.watchers)
+                    await ws.send_json({"event": "subscribed", "broker": broker,
+                                        "codes": list(codes), "ktype": running.ktype,
+                                        "seconds": left, "resumed": revived,
+                                        "shared": running.watchers > 1})
+                    continue
 
                 worker = StreamWorker(
-                    app.state.brokery, logger, broker, codes, str(action.get("ktype", "1m")),
-                    count, action.get("autype"), min(seconds, settings.api_stream_seconds),
-                    loop, queue, raw=bool(action.get("raw", False)),
+                    app.state.brokery, logger, broker, codes, ktype,
+                    count, autype, min(seconds, settings.api_stream_seconds),
+                    loop, queue, raw=raw,
                 )
-                worker.on_done = lambda worker=worker: release(broker, worker)
-                app.state.streams[broker] = worker
+                worker.on_done = lambda worker=worker, key=key: release(key, worker)
+                # 同簽名但時窗已走完（left 為 0）時即覆蓋：release() 只認得自己嗰個，舊執行緒收尾唔會誤除
+                # 呢一份新註冊。
+                app.state.streams[key] = worker
+                workers[key] = worker
                 logger.info("WS 訂閱：%s %s %s ×%d（%s 秒）", broker, ",".join(codes),
                             worker.ktype, count, worker.seconds)
                 await ws.send_json({"event": "subscribed", "broker": broker, "codes": list(codes),
                                     "ktype": worker.ktype, "seconds": worker.seconds})
                 worker.start()
-                current = worker
         except (WebSocketDisconnect, RuntimeError) as exc:
             logger.info("WS 斷開：%s（%s）", peer, type(exc).__name__)
         finally:
             pumping.cancel()
-            if current is not None:
-                current.stop()
+            for worker in workers.values():
+                # 斷開不等於券商已退訂：仍有別條連接在收即照跑，無人收時 leave 已標記結束，
+                # 其後任何連接再訂閱同一份請求即接手，唔使等時窗走完
+                worker.leave(queue)
 
     return app

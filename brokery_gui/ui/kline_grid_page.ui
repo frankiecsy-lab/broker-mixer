@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>KlineChartPage</class>
- <widget class="QWidget" name="KlineChartPage">
+ <class>KlineGridPage</class>
+ <widget class="QWidget" name="KlineGridPage">
   <layout class="QVBoxLayout" name="pageLayout">
    <item>
     <layout class="QHBoxLayout" name="toolLayout">
@@ -12,21 +12,15 @@
       <widget class="QLineEdit" name="codeEdit"/>
      </item>
      <item>
-      <widget class="QLabel" name="ktypeLabel"/>
+      <widget class="QLabel" name="gridCountLabel"/>
      </item>
      <item>
-      <widget class="QComboBox" name="ktypeCombo"/>
-     </item>
-     <item>
-      <widget class="QLabel" name="countLabel"/>
-     </item>
-     <item>
-      <widget class="QSpinBox" name="countSpin">
+      <widget class="QSpinBox" name="gridCountSpin">
        <property name="minimum">
         <number>1</number>
        </property>
        <property name="maximum">
-        <number>1000</number>
+        <number>100000</number>
        </property>
       </widget>
      </item>
@@ -35,9 +29,6 @@
      </item>
      <item>
       <widget class="QComboBox" name="brokerCombo"/>
-     </item>
-     <item>
-      <widget class="QPushButton" name="loadButton"/>
      </item>
      <item>
       <widget class="QPushButton" name="startButton"/>
@@ -71,32 +62,22 @@
     </widget>
    </item>
    <item>
-    <widget class="QWidget" name="chartBox">
+    <widget class="QWidget" name="gridBox">
      <property name="sizePolicy">
       <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
        <horstretch>0</horstretch>
-       <verstretch>3</verstretch>
+       <verstretch>9</verstretch>
       </sizepolicy>
      </property>
-     <layout class="QVBoxLayout" name="chartLayout">
+     <layout class="QVBoxLayout" name="gridLayout">
       <item>
-       <widget class="QLabel" name="chartNoteLabel">
+       <widget class="QLabel" name="gridNoteLabel">
         <property name="wordWrap">
          <bool>true</bool>
         </property>
        </widget>
       </item>
      </layout>
-    </widget>
-   </item>
-   <item>
-    <widget class="QTableWidget" name="klineTable">
-     <property name="editTriggers">
-      <set>QAbstractItemView::NoEditTriggers</set>
-     </property>
-     <property name="selectionBehavior">
-      <enum>QAbstractItemView::SelectRows</enum>
-     </property>
     </widget>
    </item>
   </layout>

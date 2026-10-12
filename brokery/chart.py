@@ -4,6 +4,9 @@
 Web UI 以 <script src> 載入，桌面 GUI 由 QWebEngineView 載入 static/chart_host.html 再注入資料。
 用同一份 JS 而不寫第二份翻譯器，日後疊加自定義指標（如 ICT 的 order block）才三處一致。
 
+多週期界面（一格一週期）另有一份 static/chart_grid.js：它只排格子與每格的週期按鈕，圖形仍由同一份
+chart.js 畫（opts.compact），所以兩個界面的多週期頁走同一條路徑，載體頁為 static/chart_grid.html。
+
 指標本身是資料：由 pandas 算出 brokers.base.OVERLAY_COLUMNS 的行，本模組只把 DataFrame 變成
 chart.js 的輸入，不含任何繪圖或指標算法。
 """
@@ -22,6 +25,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 CHART_JS = "chart.js"
 ECHARTS_JS = "echarts.min.js"
 HOST_PAGE = "chart_host.html"
+GRID_PAGE = "chart_grid.html"
 
 
 def static_dir() -> Path:
@@ -40,6 +44,11 @@ def static_file(name: str) -> Path:
 def host_page() -> Path:
     """GUI 載體頁（不含文字、不取數），由 QWebEngineView 以本地檔案載入。"""
     return static_file(HOST_PAGE)
+
+
+def grid_page() -> Path:
+    """多週期載體頁（不含文字、不取數）：格子佈局在頁內，資料一律由外層注入。"""
+    return static_file(GRID_PAGE)
 
 
 def _safe(value):
@@ -137,6 +146,11 @@ class BarStore:
             self._kept[(code, stamp)] = list(row)
         self._trim()
 
+    def set_limit(self, limit: int) -> None:
+        """改上限並即刻按新上限裁剪：上限須跟隨界面請求的根數，否則取 3000 根會被裁返 1000。"""
+        self.limit = max(1, int(limit))
+        self._trim()
+
     def _trim(self) -> None:
         by_code: dict[str, list[float]] = {}
         for code, stamp in self._kept:
@@ -152,10 +166,57 @@ class BarStore:
 
 
 def render_js(frame: pd.DataFrame, overlays: pd.DataFrame | Iterable[Mapping] | None = (), *,
-              element: str = "chart", ktype: str | None = None) -> str:
-    """產生餵俾 QWebEngineView.runJavaScript 嘅呼叫；ktype 只影響時間軸嘅顯示格式。"""
-    options = {"ktype": ktype} if ktype else {}
+              element: str = "chart", ktype: str | None = None,
+              start: float | None = None, end: float | None = None) -> str:
+    """產生餵俾 QWebEngineView.runJavaScript 嘅呼叫；ktype 只影響時間軸嘅顯示格式。
+
+    start/end 為縮放滑桿的初始窗口（百分比）。省略時沿用 chart.js 的預設（只顯示最近一段），
+    傳 start=0 即顯示全部已取得的根數；兩者只影響初始視圖，不改變餵入的資料。
+    """
+    options: dict = {}
+    if ktype:
+        options["ktype"] = ktype
+    if start is not None:
+        options["start"] = start
+    if end is not None:
+        options["end"] = end
     return ("BrokeryChart.render(document.getElementById({el}), {bars}, {overlays}, {options})"
             .format(el=json.dumps(element), bars=json.dumps(payload(frame), ensure_ascii=False),
                     overlays=json.dumps(overlay_rows(overlays), ensure_ascii=False),
                     options=json.dumps(options, ensure_ascii=False)))
+
+
+def grid_js(ktypes: Iterable[str], *, element: str = "grid") -> str:
+    """建立多週期格子的呼叫：一格一週期，順序照傳入者（即 /capabilities 的 stream_ktypes），本函數不排序。
+
+    載體頁只有一個容器，故把格子記在 window.brokeryGrid：後續注入只需要呼叫 grid_set_js，不需要再傳元素。
+    """
+    return ("window.brokeryGrid = BrokeryGrid.build(document.getElementById({el}), {options})"
+            .format(el=json.dumps(element),
+                    options=json.dumps({"ktypes": [str(k) for k in ktypes]}, ensure_ascii=False)))
+
+
+def grid_set_js(index: int, frame: pd.DataFrame, ktype: str | None = None,
+                overlays: pd.DataFrame | Iterable[Mapping] | None = ()) -> str:
+    """只重畫一格：序號由界面維持（即該週期在格子清單中的位置），ktype 只影響時間軸的顯示格式。
+
+    ktype 傳 None 即沿用該格現有週期（串流更新就是這種情況，格子自己記住是哪一个週期）。
+    """
+    return ("window.brokeryGrid && window.brokeryGrid.set({index}, {bars}, {ktype}, {overlays})"
+            .format(index=int(index), bars=json.dumps(payload(frame), ensure_ascii=False),
+                    ktype=json.dumps(ktype, ensure_ascii=False) if ktype else "null",
+                    overlays=json.dumps(overlay_rows(overlays), ensure_ascii=False)))
+
+
+def grid_note_js(index: int, text: str) -> str:
+    """在某格顯示一行提示（例如該週期的串流名額尚未釋放）；文字由界面的字庫提供，載體頁本身不含文字。"""
+    return ("window.brokeryGrid && window.brokeryGrid.note({index}, {text})"
+            .format(index=int(index), text=json.dumps(str(text), ensure_ascii=False)))
+
+
+def grid_picks_js() -> str:
+    """取走格子上被按下的週期切換，返回 [[序號, ktype], ...] 並即刻清空。
+
+    桌面 GUI 用輪詢而不是回調：QWebChannel 在離屏（offscreen）載入下會令 WebEngine 崩潰。
+    """
+    return "window.brokeryGrid ? window.brokeryGrid.takePicks() : []"

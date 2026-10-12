@@ -106,6 +106,10 @@ BAR_MINUTES = {
     "month": 30 * 1440,
 }
 
+# 週期由短至長的順序：詞表係 dict，順序不可依賴，故只喺呢度定義一次。閘道 /capabilities 照呢份返回，
+# 界面（含多週期 3×3 的九個週期）一律照返回嘅順序羅列，唔准各處自己排。
+KTYPE_ORDER = tuple(BAR_MINUTES)
+
 # 交易所當地時區。富途的 time_key 為裸字串，IB formatDate=2 在無 mapping 時亦可能返回裸
 # datetime，故一律按市場時區解釋後再換算 UTC。
 MARKET_TZ = {
